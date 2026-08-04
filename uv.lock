@@ -48,7 +48,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "mcp", specifier = ">=2.0.0" }]
+requires-dist = [{ name = "mcp", specifier = ">=2,<3" }]
 
 [[package]]
 name = "cffi"
