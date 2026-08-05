@@ -56,10 +56,13 @@ class ServerTest(unittest.TestCase):
             set(tool.input_schema["required"]), {"repository_path", "query"}
         )
 
-    def test_tool_description_discloses_write_capability(self):
+    def test_tool_description_prioritizes_codebase_retrieval(self):
         srv = make_server()
         (tool,) = self.run_async(srv.list_tools())
-        self.assertIn("write-capable", tool.description)
+        self.assertIn("# `mcp__auggie__codebase-retrieval`", tool.description)
+        self.assertIn("**FIRST CHOICE**", tool.description)
+        self.assertIn("**ALWAYS** use `codebase-retrieval`", tool.description)
+        self.assertIn("Absolute path", tool.description)
 
     # ---- Task 2: success path -----------------------------------------
 

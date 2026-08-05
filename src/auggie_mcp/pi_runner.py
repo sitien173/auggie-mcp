@@ -71,6 +71,8 @@ def build_pi_command(repository, query, system_prompt) -> list:
     ``query`` is passed as a single argument, never through a shell.
     """
     return [
+        "--model",
+        "deepseek/deepseek-v4-flash",
         "--approve",
         "--print",
         "--no-session",
