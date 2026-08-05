@@ -13,9 +13,10 @@ Flags:
   --empty              emit agent_start then agent_end with no messages
   --no-final           emit turns but no assistant response
   --garbage            emit only non-JSON text
+  --stdout-huge        emit one 70,000-byte successful response
 
-On success emits a minimal Pi-style JSONL event stream ending in an assistant
-text response.
+Emits either text output or a Pi-style JSONL stream. The selected mode controls
+the format.
 """
 
 import json
@@ -99,8 +100,24 @@ def emit_query():
 
 
 def run():
+    mode = arg_value("--mode")
+
+    if "--stdout-huge" in sys.argv:
+        text = "x" * 70_000
+        if mode == "text":
+            sys.stdout.write(text)
+            sys.stdout.flush()
+        else:
+            emit({"type": "message_end", "message": assistant_message(text)})
+        return 0
+
     if "--echo-query" in sys.argv:
-        emit_query()
+        if mode == "text":
+            query = sys.argv[sys.argv.index("--echo-query") - 1]
+            sys.stdout.write(query)
+            sys.stdout.flush()
+        else:
+            emit_query()
         return 0
 
     if "--stderr-payload" in sys.argv:
@@ -146,6 +163,23 @@ def run():
             if os.path.exists(os.path.join(os.getcwd(), "stall.lock")):
                 return 0
             time.sleep(0.05)
+
+    if mode == "text":
+        if "--empty" in sys.argv or "--no-final" in sys.argv:
+            return 0
+        if "--fail-at" in sys.argv:
+            sys.stderr.write("fake pi failure\n")
+            return 3
+        if "--chatty" in sys.argv:
+            sys.stdout.write("x" * 150_000)
+        elif "--malformed" in sys.argv:
+            sys.stdout.write("this is not json\n")
+        elif "--garbage" in sys.argv:
+            sys.stdout.write("NOT JSON AT ALL\n")
+        else:
+            sys.stdout.write(TEXT + "\n")
+        sys.stdout.flush()
+        return 0
 
     if "--chatty" in sys.argv:
         for _ in range(1500):
@@ -219,4 +253,3 @@ def run():
 
 if __name__ == "__main__":
     sys.exit(run())
-

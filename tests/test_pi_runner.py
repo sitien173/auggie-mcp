@@ -97,11 +97,13 @@ class PiRunnerTest(unittest.TestCase):
         prompt = pi_runner.load_system_prompt()
         args = pi_runner.build_pi_command(self.repo, "what does hello.txt say", prompt)
         expected_flags = [
+            "--model",
+            "deepseek/deepseek-v4-flash",
             "--approve",
             "--print",
             "--no-session",
             "--mode",
-            "json",
+            "text",
             "--no-context-files",
             "--no-extensions",
             "--no-skills",
@@ -154,6 +156,18 @@ class PiRunnerTest(unittest.TestCase):
         )
         self.assertEqual(result, "Fake final answer.")
 
+    def test_oversized_single_line_returns_without_reader_limit(self):
+        result = self.run_async(
+            pi_runner.run_pi(
+                self.repo,
+                "q",
+                "prompt",
+                executable=str(FAKE_PI),
+                extra_args=["--stdout-huge"],
+            )
+        )
+        self.assertEqual(result, "x" * 70_000)
+
     # ---- Task 3: failures ---------------------------------------------
 
     def test_missing_pi_executable_raises(self):
@@ -196,18 +210,6 @@ class PiRunnerTest(unittest.TestCase):
             )
         self.assertEqual(cm.exception.stderr, payload)
 
-    def test_malformed_jsonl_raises(self):
-        with self.assertRaises(pi_runner.PiParseError):
-            self.run_async(
-                pi_runner.run_pi(
-                    self.repo,
-                    "q",
-                    "prompt",
-                    executable=str(FAKE_PI),
-                    extra_args=["--malformed"],
-                )
-            )
-
     def test_missing_final_response_raises(self):
         with self.assertRaises(pi_runner.PiParseError):
             self.run_async(
@@ -233,30 +235,6 @@ class PiRunnerTest(unittest.TestCase):
                 )
             )
 
-    def test_garbage_output_raises(self):
-        with self.assertRaises(pi_runner.PiParseError):
-            self.run_async(
-                pi_runner.run_pi(
-                    self.repo,
-                    "q",
-                    "prompt",
-                    executable=str(FAKE_PI),
-                    extra_args=["--garbage"],
-                )
-            )
-
-    def test_truncated_stream_raises(self):
-        with self.assertRaises(pi_runner.PiParseError):
-            self.run_async(
-                pi_runner.run_pi(
-                    self.repo,
-                    "q",
-                    "prompt",
-                    executable=str(FAKE_PI),
-                    extra_args=["--event-count", "3"],
-                )
-            )
-
     # ---- Task 3: bounded output ---------------------------------------
 
     def test_stderr_truncated(self):
@@ -273,22 +251,6 @@ class PiRunnerTest(unittest.TestCase):
             self.fail("expected PiExecutionError")
         except pi_runner.PiExecutionError as e:
             self.assertLessEqual(len(e.stderr), pi_runner.STDERR_LIMIT)
-
-    def test_chatty_output_bounded(self):
-        # 1500 x 100-char deltas to stdout, exit 0, no final message.
-        # Exercises the bounded-output path without unbounded retention.
-        try:
-            self.run_async(
-                pi_runner.run_pi(
-                    self.repo,
-                    "q",
-                    "prompt",
-                    executable=str(FAKE_PI),
-                    extra_args=["--chatty"],
-                )
-            )
-        except pi_runner.PiParseError:
-            pass
 
     def test_stderr_retained_buffer_bounded_after_oversized_input(self):
         """The retained stderr buffer never exceeds STDERR_LIMIT bytes."""
@@ -454,11 +416,11 @@ class PiRunnerTest(unittest.TestCase):
         self.assertTrue(poll_filled())
         self.assertEqual(self._poll_gone(tracked), [])
 
-    def test_adapter_default_timeout_is_five_minutes(self):
+    def test_adapter_default_timeout_is_thirty_minutes(self):
         import inspect
         sig = inspect.signature(pi_runner.run_pi)
-        self.assertEqual(sig.parameters["timeout"].default, 300)
-        self.assertEqual(pi_runner.TIMEOUT_SECONDS, 300)
+        self.assertEqual(sig.parameters["timeout"].default, 1800)
+        self.assertEqual(pi_runner.TIMEOUT_SECONDS, 1800)
 
     def test_unlimited_parallel_calls(self):
         async def main():
@@ -502,7 +464,7 @@ class PiRunnerTest(unittest.TestCase):
         self.assertIn("--approve", cmd)
         self.assertIn("--print", cmd)
         self.assertIn("--no-session", cmd)
-        self.assertEqual(cmd[cmd.index("--mode") + 1], "json")
+        self.assertEqual(cmd[cmd.index("--mode") + 1], "text")
         self.assertEqual(cmd[cmd.index("--system-prompt") + 1], prompt)
         self.assertEqual(cmd[-1], "q")
 

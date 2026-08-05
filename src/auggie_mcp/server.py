@@ -3,7 +3,7 @@
 The server registers exactly one tool. Each call runs an ephemeral noninteractive
 Pi subprocess (via ``auggie_mcp.pi_runner``) against the caller-selected
 directory and returns Pi's final answer as text. Operational failures such as
-invalid directories, missing Pi, nonzero exits, malformed output, and timeouts
+invalid directories, missing Pi, nonzero exits, empty output, and timeouts
 surface as MCP tool errors. Client cancellation propagates into the adapter.
 
 Transport is stdio only. There are no resources, prompts, extra tools,
@@ -17,7 +17,7 @@ from auggie_mcp import pi_runner
 
 _SYSTEM_PROMPT = pi_runner.load_system_prompt()
 
-_TOOL_DESCRIPTION = """
+_TOOL_DESCRIPTION = """# `mcp__auggie__codebase-retrieval`
 
 IMPORTANT: This is the primary tool for searching the codebase. Please consider as the **FIRST CHOICE** for any codebase searches.
 

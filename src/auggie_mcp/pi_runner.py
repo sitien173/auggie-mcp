@@ -1,20 +1,19 @@
 """Ephemeral Pi subprocess adapter for codebase retrieval.
 
 Starts one noninteractive Pi process per invocation against a caller-selected
-directory, parses the JSONL event stream incrementally, and returns only the
-final assistant response. Timeout and cancellation terminate the entire Linux
-process group. No concurrency limit, no semaphore, and no queue.
+directory and returns Pi's text-mode final response. Timeout and cancellation
+terminate the entire Linux process group. No concurrency limit, no semaphore,
+and no queue.
 """
 
 import asyncio
 import importlib.resources
-import json
 import os
 import signal
 from pathlib import Path
 
-# Five-minute per-invocation timeout (seconds).
-TIMEOUT_SECONDS = 300.0
+# Thirty-minute per-invocation timeout (seconds).
+TIMEOUT_SECONDS = 1800.0
 
 # Grace period between SIGTERM and SIGKILL during shutdown.
 _SHUTDOWN_GRACE_SECONDS = 0.5
@@ -40,7 +39,7 @@ class PiExecutionError(PiRunnerError):
 
 
 class PiParseError(PiRunnerError):
-    """Pi output was malformed or missing a final assistant response."""
+    """Pi produced no final assistant response."""
 
 
 def load_system_prompt() -> str:
@@ -77,7 +76,7 @@ def build_pi_command(repository, query, system_prompt) -> list:
         "--print",
         "--no-session",
         "--mode",
-        "json",
+        "text",
         "--no-context-files",
         "--no-extensions",
         "--no-skills",
@@ -86,21 +85,6 @@ def build_pi_command(repository, query, system_prompt) -> list:
         system_prompt,
         query,
     ]
-
-
-def _record_text_from_event(event, final_text):
-    """Update ``final_text`` when ``event`` is an assistant text message_end."""
-    if not isinstance(event, dict):
-        raise PiParseError("malformed JSONL event: expected an object")
-    if event.get("type") != "message_end":
-        return final_text
-    message = event.get("message")
-    if not isinstance(message, dict) or message.get("role") != "assistant":
-        return final_text
-    for part in message.get("content") or []:
-        if isinstance(part, dict) and part.get("type") == "text":
-            final_text = part.get("text")
-    return final_text
 
 
 async def _drain_bounded(stream, chunks, limit):
@@ -129,7 +113,8 @@ def _join_bounded(chunks, limit):
 
 
 async def _run_pi_process(cmd, repo, timeout):
-    """Create Pi in a fresh process group, parse JSONL, terminate on exit."""
+    """Create Pi in a fresh process group and return its text output."""
+    stdout = bytearray()
     stderr_chunks = []
     proc = None
     stderr_task = None
@@ -152,20 +137,11 @@ async def _run_pi_process(cmd, repo, timeout):
             _drain_bounded(proc.stderr, stderr_chunks, STDERR_LIMIT)
         )
 
-        final_text = None
         while True:
-            line = await proc.stdout.readline()
-            if not line:
+            chunk = await proc.stdout.read(65536)
+            if not chunk:
                 break
-            text = line.decode("utf-8", errors="replace").strip()
-            if not text:
-                continue
-            try:
-                event = json.loads(text)
-            except json.JSONDecodeError as exc:
-                await _terminate_group(proc)
-                raise PiParseError(f"malformed JSONL line from Pi: {exc.msg}") from exc
-            final_text = _record_text_from_event(event, final_text)
+            stdout.extend(chunk)
 
         await proc.wait()
         returncode = proc.returncode
@@ -191,7 +167,8 @@ async def _run_pi_process(cmd, repo, timeout):
                 stderr=stderr_text[:STDERR_LIMIT],
             )
 
-        if final_text is None:
+        final_text = stdout.decode("utf-8", errors="replace").rstrip("\r\n")
+        if not final_text.strip():
             raise PiParseError("Pi produced no final assistant response")
         return final_text
     except asyncio.CancelledError:

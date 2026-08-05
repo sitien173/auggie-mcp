@@ -62,16 +62,17 @@ followed by an `Evidence:` section with real file paths and line ranges.
 
 - Every invocation starts one ephemeral Pi subprocess in the requested
   directory with a fixed, confirmed flag set (`--approve --print --no-session
-  --mode json --no-context-files --no-extensions --no-skills
+  --mode text --no-context-files --no-extensions --no-skills
   --no-prompt-templates --system-prompt <text> <query>`).
+- Pi emits only its final response on stdout. The adapter reads that response
+  in fixed-size chunks, avoiding JSONL line-length limits.
 - No Pi tool allowlist is passed. All built-in tools, including `bash`, `edit`,
   and `write`) remain available.
 - Requests start immediately; there is no concurrency limit or queue.
-- Each invocation has a five-minute timeout; timeout and cancellation terminate
+- Each invocation has a thirty-minute timeout; timeout and cancellation terminate
   the Pi Linux process group (SIGTERM, then SIGKILL after a grace period).
-- Invalid directories, missing Pi, nonzero exits, malformed output, missing
-  responses, timeouts, and cancellations surface as MCP tool errors with concise
-  diagnostics.
+- Invalid directories, missing Pi, nonzero exits, empty responses, timeouts,
+  and cancellations surface as MCP tool errors with concise diagnostics.
 
 ## Accepted risks
 
