@@ -59,7 +59,6 @@ class ServerTest(unittest.TestCase):
     def test_tool_description_prioritizes_codebase_retrieval(self):
         srv = make_server()
         (tool,) = self.run_async(srv.list_tools())
-        self.assertIn("# `mcp__auggie__codebase-retrieval`", tool.description)
         self.assertIn("**FIRST CHOICE**", tool.description)
         self.assertIn("**ALWAYS** use `codebase-retrieval`", tool.description)
         self.assertIn("Absolute path", tool.description)

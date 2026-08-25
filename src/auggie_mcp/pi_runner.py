@@ -71,7 +71,7 @@ def build_pi_command(repository, query, system_prompt) -> list:
     """
     return [
         "--model",
-        "deepseek/deepseek-v4-flash",
+        "deepseekv4-flash",
         "--approve",
         "--print",
         "--no-session",

@@ -17,7 +17,7 @@ from auggie_mcp import pi_runner
 
 _SYSTEM_PROMPT = pi_runner.load_system_prompt()
 
-_TOOL_DESCRIPTION = """# `mcp__auggie__codebase-retrieval`
+_TOOL_DESCRIPTION = """
 
 IMPORTANT: This is the primary tool for searching the codebase. Please consider as the **FIRST CHOICE** for any codebase searches.
 
