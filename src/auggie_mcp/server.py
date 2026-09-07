@@ -29,6 +29,15 @@ This MCP tool is Augment's context engine, the world's best codebase context eng
 4. Can retrieve across different programming languages.
 5. Only reflects the current state of the codebase on the disk, and has no information on version control or code history.
 
+## Execution Model
+
+This tool is LONG RUNNING. A single call typically takes several minutes.
+
+- Run it as a background task and wait for it to complete.
+- Do NOT explore or try to understand the codebase yourself while this tool is running. Do not read files, tgrep, or spawn search agents in the meantime.
+- Do NOT call this tool again for the same question while a call is in flight.
+- Wait for the result, then act on it. The returned answer replaces the exploration you would otherwise do.
+
 ## When to Use
 
 Use `codebase-retrieval` in the following cases:
@@ -45,14 +54,14 @@ Use `codebase-retrieval` in the following cases:
 
 ### Bad Queries (use other tools instead)
 
-- "Find definition of constructor of class Foo" — use `grep` instead.
-- "Find all references to function bar" — use `grep` instead.
+- "Find definition of constructor of class Foo" — use `tgrep` instead.
+- "Find all references to function bar" — use `tgrep` instead.
 - "Show me how Checkout class is used in services/payment.py" — use file view instead.
 - "Show context of the file foo.py" — use file view instead.
 
 ## Tool Selection Rule
 
-**ALWAYS** use `codebase-retrieval` when you're unsure of exact file locations. Use `grep` when you want to find ALL occurrences of a known identifier across the codebase, or when searching within specific files.
+**ALWAYS** use `codebase-retrieval` when you're unsure of exact file locations. Use `tgrep` when you want to find ALL occurrences of a known identifier across the codebase, or when searching within specific files.
 
 ## Parameters
 

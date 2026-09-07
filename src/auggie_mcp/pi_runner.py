@@ -71,13 +71,14 @@ def build_pi_command(repository, query, system_prompt) -> list:
     """
     return [
         "--model",
-        "deepseekv4-flash",
+        "gpt-5.6-luna",
+        "--thinking",
+        "high",
         "--approve",
         "--print",
         "--no-session",
         "--mode",
         "text",
-        "--no-context-files",
         "--no-extensions",
         "--no-skills",
         "--no-prompt-templates",
