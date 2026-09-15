@@ -1,19 +1,11 @@
-"""Single-tool MCP server exposing ``codebase_retrieval``.
+"""Stdio MCP server exposing semantic and exact codebase search."""
 
-The server registers exactly one tool. Each call runs an ephemeral noninteractive
-Pi subprocess (via ``auggie_mcp.pi_runner``) against the caller-selected
-directory and returns Pi's final answer as text. Operational failures such as
-invalid directories, missing Pi, nonzero exits, empty output, and timeouts
-surface as MCP tool errors. Client cancellation propagates into the adapter.
-
-Transport is stdio only. There are no resources, prompts, extra tools,
-transports, access controls, or concurrency controls.
-"""
+from pathlib import Path
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from auggie_mcp import pi_runner
+from auggie_mcp import pi_runner, tgrep_runner
 
 _SYSTEM_PROMPT = pi_runner.load_system_prompt()
 
@@ -70,15 +62,25 @@ Use `codebase-retrieval` in the following cases:
 | `repository_path` | `string` | Yes | Absolute path to the directory/repository you want to search. |
 | `query` | `string` | Yes | A description of the information you need from the codebase. |"""
 
+_SEARCH_TOOL_DESCRIPTION = (
+    "Fast regex search over the repository. ripgrep-compatible flags. "
+    "Use -F for literal strings, -t/-g to scope, -l for file names only, "
+    "-C N for context."
+)
 
-def create_server(*, executable: str = "pi") -> MCPServer:
-    """Build the MCP server with the single ``codebase_retrieval`` tool."""
+
+def create_server(
+    *,
+    executable: str = "pi",
+    tgrep_executable: str = "tgrep",
+    repository_root=None,
+) -> MCPServer:
+    """Build the MCP server and capture its repository search root."""
+    search_root = Path.cwd() if repository_root is None else Path(repository_root)
     server = MCPServer(
         name="auggie-mcp",
-        title="Auggie Codebase Retrieval",
-        description=(
-            "Semantic code search and codebase understanding over an arbitrary "
-        ),
+        title="Auggie Codebase Search",
+        description="Semantic retrieval and fast exact repository search.",
         version="0.1.0",
     )
 
@@ -106,6 +108,33 @@ def create_server(*, executable: str = "pi") -> MCPServer:
             raise ToolError(message) from exc
         except Exception as exc:  # timeout, cancellation, unexpected
             raise ToolError(str(exc) or exc.__class__.__name__) from exc
+
+    @server.tool(
+        name="codebase_search",
+        description=_SEARCH_TOOL_DESCRIPTION,
+    )
+    async def codebase_search(
+        pattern: str,
+        path: str = ".",
+        flags: list[str] | None = None,
+    ) -> tgrep_runner.TgrepResult:
+        """Run tgrep beneath the server startup directory."""
+        try:
+            result = await tgrep_runner.run_tgrep(
+                search_root,
+                pattern,
+                path,
+                flags,
+                executable=tgrep_executable,
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            raise ToolError(str(exc)) from exc
+        if result["exit_code"] not in {0, 1}:
+            message = result["stderr"] or (
+                f"tgrep exited with status {result['exit_code']}"
+            )
+            raise ToolError(message)
+        return result
 
     return server
 

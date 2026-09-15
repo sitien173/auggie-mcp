@@ -13,13 +13,20 @@ from auggie_mcp import pi_runner, server
 
 TESTS_DIR = Path(__file__).resolve().parent
 FAKE_PI = TESTS_DIR / "fake_pi.py"
+FAKE_TGREP = TESTS_DIR / "fake_tgrep.py"
 
 if not os.access(FAKE_PI, os.X_OK):
     os.chmod(FAKE_PI, 0o755)
+if not os.access(FAKE_TGREP, os.X_OK):
+    os.chmod(FAKE_TGREP, 0o755)
 
 
-def make_server():
-    return server.create_server(executable=str(FAKE_PI))
+def make_server(repository_root=None):
+    return server.create_server(
+        executable=str(FAKE_PI),
+        tgrep_executable=str(FAKE_TGREP),
+        repository_root=repository_root,
+    )
 
 
 class ServerTest(unittest.TestCase):
@@ -33,35 +40,56 @@ class ServerTest(unittest.TestCase):
     def run_async(self, coro):
         return asyncio.run(coro)
 
-    # ---- Task 1: discovery exposes exactly one tool -------------------
+    # ---- Task 1: tool discovery and schemas ----------------------------
 
-    def test_discovery_exposes_exactly_codebase_retrieval(self):
+    def test_discovery_exposes_retrieval_and_search(self):
         srv = make_server()
         tools = self.run_async(srv.list_tools())
         names = [t.name for t in tools]
-        self.assertEqual(names, ["codebase_retrieval"])
+        self.assertEqual(names, ["codebase_retrieval", "codebase_search"])
 
     def test_no_resources_or_prompts(self):
         srv = make_server()
         self.assertEqual(self.run_async(srv.list_resources()), [])
         self.assertEqual(self.run_async(srv.list_prompts()), [])
 
-    def test_tool_accepts_only_repository_path_and_query(self):
+    def test_retrieval_tool_accepts_only_repository_path_and_query(self):
         srv = make_server()
         tools = self.run_async(srv.list_tools())
-        (tool,) = tools
+        tool = next(tool for tool in tools if tool.name == "codebase_retrieval")
         props = tool.input_schema["properties"]
         self.assertEqual(set(props), {"repository_path", "query"})
         self.assertEqual(
             set(tool.input_schema["required"]), {"repository_path", "query"}
         )
 
-    def test_tool_description_prioritizes_codebase_retrieval(self):
+    def test_search_tool_matches_requested_schema(self):
         srv = make_server()
-        (tool,) = self.run_async(srv.list_tools())
-        self.assertIn("**FIRST CHOICE**", tool.description)
-        self.assertIn("**ALWAYS** use `codebase-retrieval`", tool.description)
-        self.assertIn("Absolute path", tool.description)
+        tools = self.run_async(srv.list_tools())
+        tool = next(tool for tool in tools if tool.name == "codebase_search")
+        props = tool.input_schema["properties"]
+        self.assertEqual(set(props), {"pattern", "path", "flags"})
+        self.assertEqual(set(tool.input_schema["required"]), {"pattern"})
+        self.assertEqual(props["path"]["default"], ".")
+        self.assertEqual(
+            set(tool.output_schema["properties"]),
+            {"stdout", "stderr", "exit_code"},
+        )
+        self.assertEqual(
+            set(tool.output_schema["required"]),
+            {"stdout", "stderr", "exit_code"},
+        )
+
+    def test_tool_descriptions_distinguish_semantic_and_exact_search(self):
+        srv = make_server()
+        tools = self.run_async(srv.list_tools())
+        retrieval = next(tool for tool in tools if tool.name == "codebase_retrieval")
+        search = next(tool for tool in tools if tool.name == "codebase_search")
+        self.assertIn("**FIRST CHOICE**", retrieval.description)
+        self.assertIn("**ALWAYS** use `codebase-retrieval`", retrieval.description)
+        self.assertIn("Absolute path", retrieval.description)
+        self.assertIn("Fast regex search", search.description)
+        self.assertIn("-F", search.description)
 
     # ---- Task 2: success path -----------------------------------------
 
@@ -77,6 +105,32 @@ class ServerTest(unittest.TestCase):
         text = result.content[0].text
         self.assertEqual(text, "Fake final answer.")
 
+    def test_search_call_returns_structured_process_result(self):
+        srv = make_server(self.repo)
+        result = self.run_async(
+            srv.call_tool(
+                "codebase_search",
+                {"pattern": "hello", "path": ".", "flags": ["-F"]},
+            )
+        )
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.structured_content["exit_code"], 0)
+        self.assertIn("search warning", result.structured_content["stderr"])
+        self.assertIn("hello", result.structured_content["stdout"])
+
+    def test_search_no_match_is_not_a_tool_error(self):
+        srv = make_server(self.repo)
+        result = self.run_async(
+            srv.call_tool("codebase_search", {"pattern": "nomatch"})
+        )
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.structured_content["exit_code"], 1)
+
+    def test_search_exit_two_is_a_tool_error(self):
+        srv = make_server(self.repo)
+        with self.assertRaisesRegex(ToolError, "regex parse error"):
+            self.run_async(srv.call_tool("codebase_search", {"pattern": "bad["}))
+
     # ---- Task 2: operational failures become tool errors --------------
 
     def test_invalid_repository_path_returns_tool_error(self):
@@ -91,6 +145,31 @@ class ServerTest(unittest.TestCase):
                     },
                 )
             )
+
+    def test_search_path_escape_returns_tool_error(self):
+        srv = make_server(self.repo)
+        with self.assertRaises(ToolError):
+            self.run_async(
+                srv.call_tool("codebase_search", {"pattern": "x", "path": ".."})
+            )
+
+    def test_unsupported_search_flag_returns_tool_error(self):
+        srv = make_server(self.repo)
+        with self.assertRaises(ToolError):
+            self.run_async(
+                srv.call_tool(
+                    "codebase_search", {"pattern": "x", "flags": ["--exclude"]}
+                )
+            )
+
+    def test_missing_tgrep_returns_tool_error(self):
+        srv = server.create_server(
+            executable=str(FAKE_PI),
+            tgrep_executable="/definitely/missing/tgrep",
+            repository_root=self.repo,
+        )
+        with self.assertRaises(ToolError):
+            self.run_async(srv.call_tool("codebase_search", {"pattern": "x"}))
 
     def test_pi_failure_returns_tool_error(self):
         error = pi_runner.PiExecutionError(
@@ -213,6 +292,8 @@ class ServerTest(unittest.TestCase):
         self.addCleanup(fake_bin_dir.cleanup)
         fake_pi = Path(fake_bin_dir.name) / "pi"
         fake_pi.symlink_to(FAKE_PI)
+        fake_tgrep = Path(fake_bin_dir.name) / "tgrep"
+        fake_tgrep.symlink_to(FAKE_TGREP)
         env["PATH"] = fake_bin_dir.name + os.pathsep + env.get("PATH", "")
         proc = subprocess.Popen(
             [os.sys.executable, "-m", "auggie_mcp"],
@@ -257,7 +338,7 @@ class ServerTest(unittest.TestCase):
             # tools/list
             resp = request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
             names = [t["name"] for t in resp["result"]["tools"]]
-            self.assertEqual(names, ["codebase_retrieval"])
+            self.assertEqual(names, ["codebase_retrieval", "codebase_search"])
             # tools/call
             resp = request(
                 {
