@@ -17,7 +17,42 @@ uv sync
 ```
 
 The `auggie-mcp` console command and `python -m auggie_mcp` both start the
-stdio server.
+stdio server. The separate `auggie` console command exposes the retrieval and
+search runners on the command line.
+
+## CLI
+
+The `auggie` command reuses the MCP server's runners without changing server
+behavior. Output is JSON by default; pass `--human` for text.
+
+```bash
+# Semantic retrieval (uses the Pi retrieval runner)
+uv run auggie retrieve <repository> <query>
+
+# Exact search in the current directory (uses the tgrep runner)
+uv run auggie search <pattern> [tgrep flags...]
+```
+
+- `auggie retrieve <repository> <query>` runs the retrieval runner against
+  `repository` and prints `{"response": "..."}`. With `--human` it prints the
+  response text.
+- `auggie search <pattern>` runs tgrep in the invocation directory. Any
+  remaining arguments are forwarded unchanged to the existing tgrep flag
+  validation. It prints the runner result object
+  `{"stdout": ..., "stderr": ..., "exit_code": ...}`. With `--human` it prints
+  tgrep standard output.
+- A search with no matches is a normal result: it emits the JSON result and
+  exits `1`.
+- Argument-validation and runner failures emit a JSON error object to standard
+  error and exit `2`.
+
+Command help is available for both commands:
+
+```bash
+uv run auggie --help
+uv run auggie retrieve --help
+uv run auggie search --help
+```
 
 ## MCP configuration
 

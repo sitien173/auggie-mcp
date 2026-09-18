@@ -11,6 +11,7 @@ dependencies = ["mcp>=2,<3"]
 
 [project.scripts]
 auggie-mcp = "auggie_mcp.server:run"
+auggie = "auggie_mcp.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/auggie_mcp"]
