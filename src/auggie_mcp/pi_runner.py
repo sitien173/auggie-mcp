@@ -71,7 +71,7 @@ def build_pi_command(repository, query, system_prompt) -> list:
     """
     return [
         "--model",
-        "codebase-retrieval",
+        "gpt-5.6-luna",
         "--thinking",
         "high",
         "--approve",
