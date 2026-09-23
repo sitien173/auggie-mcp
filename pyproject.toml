@@ -4,10 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "auggie-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python MCP server exposing codebase retrieval through an ephemeral Pi subprocess"
 requires-python = ">=3.10"
-dependencies = ["mcp>=2,<3"]
+dependencies = [
+    "mcp>=2,<3",
+    "typesafe-sdk",
+]
 
 [project.scripts]
 auggie-mcp = "auggie_mcp.server:run"
