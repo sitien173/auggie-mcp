@@ -283,6 +283,8 @@ class Chunk:
 
     @property
     def line_count(self) -> int:
+        if self.pieces:
+            return len({p.line_number for p in self.pieces})
         return max(1, self.end_line - self.start_line + 1)
 
     def to_metadata(self) -> ChunkMetadata:
@@ -462,7 +464,17 @@ def render_omissions(
             while i < len(chunks) and not chunks[i].retained:
                 dropped.append(chunks[i])
                 i += 1
-            dropped_lines = sum(c.line_count for c in dropped)
+            unique_source_lines: set[Tuple[str, int]] = set()
+            for c in dropped:
+                if c.pieces:
+                    unique_source_lines.update(
+                        (c.source, p.line_number) for p in c.pieces
+                    )
+                else:
+                    unique_source_lines.update(
+                        (c.source, ln) for ln in range(c.start_line, c.end_line + 1)
+                    )
+            dropped_lines = len(unique_source_lines)
             dropped_chars = sum(len(c.text) for c in dropped)
             if recovery_path:
                 marker = f"[omitted {dropped_lines} lines ({dropped_chars} characters); full output: {recovery_path}]"
@@ -533,4 +545,3 @@ def create_archive(
 
     os.chmod(archive_file, 0o600)
     return archive_file
-

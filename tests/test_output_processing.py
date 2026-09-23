@@ -474,6 +474,20 @@ class TestOmissionRendering(unittest.TestCase):
         self.assertNotIn("stderr", rendered["stdout"])
         self.assertNotIn("stdout", rendered["stderr"])
 
+    def test_omission_rendering_very_long_single_line_spans_multiple_chunks(self):
+        from auggie_mcp.output_processing import chunk_source, render_omissions
+
+        # 50,000 characters in one logical line splits into 25 pieces (>20 nominal lines)
+        long_line = "A" * 50000 + "\n"
+        chunks = chunk_source("result", long_line)
+        self.assertGreater(len(chunks), 1, "Long line must span multiple chunks")
+        for c in chunks:
+            c.retained = False
+
+        rendered = render_omissions(chunks)
+        # Unique logical line count must be exactly 1, not len(chunks)
+        self.assertEqual(rendered, f"[omitted 1 lines ({len(long_line)} characters)]")
+
 
 class TestArchiveCreation(unittest.TestCase):
     """Task 4B: Private archive creation and security."""
@@ -543,6 +557,26 @@ class TestArchiveCreation(unittest.TestCase):
         repo_root = Path(__file__).resolve().parent.parent
         default_dir = get_default_archive_dir()
         self.assertFalse(default_dir.is_relative_to(repo_root), "Default archive path must be outside repo")
+
+    def test_archive_exclusive_create_collision_prevents_replacement(self):
+        import uuid
+        from auggie_mcp.output_processing import create_archive
+
+        fixed_uuid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+        original_data = {"result": "initial uncorrupted data"}
+        attempted_data = {"result": "malicious overwrite attempt"}
+
+        with patch("uuid.uuid4", return_value=fixed_uuid):
+            path = create_archive("codebase_retrieval", original_data, archive_dir=self.archive_dir)
+            self.assertTrue(path.exists())
+
+            # Attempt to create again with forced UUID collision
+            with self.assertRaises(FileExistsError):
+                create_archive("codebase_retrieval", attempted_data, archive_dir=self.archive_dir)
+
+            # Assert original content was preserved and not overwritten
+            content = json.loads(path.read_text("utf-8"))
+            self.assertEqual(content["data"]["result"], "initial uncorrupted data")
 
 
 if __name__ == "__main__":
