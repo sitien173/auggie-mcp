@@ -1,11 +1,24 @@
 """Stdio MCP server exposing semantic and exact codebase search."""
 
+import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, AsyncIterator, Callable
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from auggie_mcp import pi_runner, tgrep_runner
+from auggie_mcp.output_processing import (
+    OutputProcessor,
+    RetrievalEnvelope,
+    SearchEnvelope,
+    create_typesafe_client,
+    load_config,
+    reset_archive_executor,
+)
 
 _SYSTEM_PROMPT = pi_runner.load_system_prompt()
 
@@ -60,7 +73,8 @@ Use `codebase-retrieval` in the following cases:
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `repository_path` | `string` | Yes | Absolute path to the directory/repository you want to search. |
-| `query` | `string` | Yes | A description of the information you need from the codebase. |"""
+| `query` | `string` | Yes | A description of the information you need from the codebase. |
+| `goal` | `string` | No | Optional specific task or question guiding retention pruning. Defaults to query. |"""
 
 _SEARCH_TOOL_DESCRIPTION = (
     "Fast regex search over the repository. ripgrep-compatible flags. "
@@ -69,36 +83,154 @@ _SEARCH_TOOL_DESCRIPTION = (
 )
 
 
+@dataclass
+class LifespanState:
+    """Server lifespan context holding shared TypeSafe client and output processor."""
+
+    client: Any
+    processor: OutputProcessor
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "client":
+            return self.client
+        if key == "processor":
+            return self.processor
+        raise KeyError(key)
+
+
 def create_server(
     *,
     executable: str = "pi",
     tgrep_executable: str = "tgrep",
     repository_root=None,
+    client_factory: Callable[[], Any] | None = None,
+    processor_factory: Callable[[Any], OutputProcessor] | None = None,
 ) -> MCPServer:
     """Build the MCP server and capture its repository search root."""
     search_root = Path.cwd() if repository_root is None else Path(repository_root)
+
+    @asynccontextmanager
+    async def lifespan(app: MCPServer) -> AsyncIterator[LifespanState]:
+        cfg = load_config()
+        if client_factory is not None:
+            client = client_factory()
+        elif cfg.api_key:
+            client = create_typesafe_client(cfg)
+        else:
+            client = None
+
+        if client is not None and hasattr(client, "__aenter__") and hasattr(client, "__aexit__"):
+            async with client:
+                proc = (
+                    processor_factory(client)
+                    if processor_factory is not None
+                    else OutputProcessor(client=client, config=cfg)
+                )
+                state = LifespanState(client=client, processor=proc)
+                app._current_lifespan_state = state
+                try:
+                    yield state
+                finally:
+                    app._current_lifespan_state = None
+                    reset_archive_executor(wait=True)
+        elif client is not None:
+            proc = (
+                processor_factory(client)
+                if processor_factory is not None
+                else OutputProcessor(client=client, config=cfg)
+            )
+            state = LifespanState(client=client, processor=proc)
+            app._current_lifespan_state = state
+            try:
+                yield state
+            finally:
+                app._current_lifespan_state = None
+                if hasattr(client, "aclose"):
+                    await client.aclose()
+                reset_archive_executor(wait=True)
+        else:
+            proc = (
+                processor_factory(client)
+                if processor_factory is not None
+                else OutputProcessor(client=None, config=cfg)
+            )
+            state = LifespanState(client=None, processor=proc)
+            app._current_lifespan_state = state
+            try:
+                yield state
+            finally:
+                app._current_lifespan_state = None
+                reset_archive_executor(wait=True)
+
     server = MCPServer(
         name="auggie-mcp",
         title="Auggie Codebase Search",
         description="Semantic retrieval and fast exact repository search.",
-        version="0.1.0",
+        version="0.2.0",
+        lifespan=lifespan,
     )
+
+    fallback_holder: dict[str, OutputProcessor | None] = {"processor": None}
+
+    def _get_processor(ctx: Context | None = None) -> OutputProcessor:
+        if ctx is not None:
+            try:
+                req_ctx = ctx.request_context
+                if req_ctx is not None and hasattr(req_ctx, "lifespan_context"):
+                    ls = req_ctx.lifespan_context
+                    if isinstance(ls, LifespanState):
+                        return ls.processor
+                    if isinstance(ls, dict) and "processor" in ls:
+                        return ls["processor"]
+                    if hasattr(ls, "processor"):
+                        return ls.processor
+            except (ValueError, AttributeError):
+                pass
+            if getattr(ctx, "mcp_server", None) is not None:
+                active = getattr(ctx.mcp_server, "_current_lifespan_state", None)
+                if active is not None:
+                    return active.processor
+
+        if getattr(server, "_current_lifespan_state", None) is not None:
+            return server._current_lifespan_state.processor
+
+        if fallback_holder["processor"] is None:
+            cfg = load_config()
+            if client_factory is not None:
+                cl = client_factory()
+            elif cfg.api_key:
+                cl = create_typesafe_client(cfg)
+            else:
+                cl = None
+
+            if processor_factory is not None:
+                fallback_holder["processor"] = processor_factory(cl)
+            else:
+                fallback_holder["processor"] = OutputProcessor(
+                    client=cl, config=cfg
+                )
+        return fallback_holder["processor"]
 
     @server.tool(
         name="codebase_retrieval",
         description=_TOOL_DESCRIPTION,
     )
     async def codebase_retrieval(
-        repository_path: str, query: str
-    ) -> str:
-        """Run Pi in ``repository_path`` with ``query`` and return the answer."""
+        repository_path: str,
+        query: str,
+        goal: str | None = None,
+        ctx: Context = None,
+    ) -> RetrievalEnvelope:
+        """Run Pi in ``repository_path`` with ``query`` and return the classified answer envelope."""
         try:
-            return await pi_runner.run_pi(
+            runner_result = await pi_runner.run_pi(
                 repository_path,
                 query,
                 _SYSTEM_PROMPT,
                 executable=executable,
             )
+        except asyncio.CancelledError:
+            raise
         except (ValueError, FileNotFoundError) as exc:
             raise ToolError(str(exc)) from exc
         except pi_runner.PiRunnerError as exc:
@@ -106,8 +238,16 @@ def create_server(
             if isinstance(exc, pi_runner.PiExecutionError) and exc.stderr:
                 message = f"{message}: {exc.stderr}"
             raise ToolError(message) from exc
-        except Exception as exc:  # timeout, cancellation, unexpected
+        except Exception as exc:  # timeout, unexpected
             raise ToolError(str(exc) or exc.__class__.__name__) from exc
+
+        processor = _get_processor(ctx)
+        effective_goal = goal if goal is not None else query
+        return await processor.process_retrieval(
+            query=query,
+            result=runner_result,
+            goal=effective_goal,
+        )
 
     @server.tool(
         name="codebase_search",
@@ -117,8 +257,10 @@ def create_server(
         pattern: str,
         path: str = ".",
         flags: list[str] | None = None,
-    ) -> tgrep_runner.TgrepResult:
-        """Run tgrep beneath the server startup directory."""
+        goal: str | None = None,
+        ctx: Context = None,
+    ) -> SearchEnvelope:
+        """Run tgrep beneath the server startup directory and return the classified search envelope."""
         try:
             result = await tgrep_runner.run_tgrep(
                 search_root,
@@ -127,6 +269,8 @@ def create_server(
                 flags,
                 executable=tgrep_executable,
             )
+        except asyncio.CancelledError:
+            raise
         except (ValueError, FileNotFoundError) as exc:
             raise ToolError(str(exc)) from exc
         if result["exit_code"] not in {0, 1}:
@@ -134,7 +278,19 @@ def create_server(
                 f"tgrep exited with status {result['exit_code']}"
             )
             raise ToolError(message)
-        return result
+
+        processor = _get_processor(ctx)
+        effective_goal = goal if goal is not None else pattern
+        return await processor.process_search(
+            pattern=pattern,
+            stdout=result["stdout"],
+            stderr=result["stderr"],
+            exit_code=result["exit_code"],
+            path=path,
+            flags=flags,
+            goal=effective_goal,
+            repository=search_root,
+        )
 
     return server
 
