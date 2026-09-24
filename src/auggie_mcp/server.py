@@ -77,9 +77,10 @@ Use `codebase-retrieval` in the following cases:
 | `goal` | `string` | No | Optional specific task or question guiding retention pruning. Defaults to query. |"""
 
 _SEARCH_TOOL_DESCRIPTION = (
-    "Fast regex search over the repository. ripgrep-compatible flags. "
-    "Use -F for literal strings, -t/-g to scope, -l for file names only, "
-    "-C N for context."
+    "Fast regex search over files or directories. Relative paths resolve beneath "
+    "the server startup repository. Absolute paths may target any accessible "
+    "location. ripgrep-compatible flags. Use -F for literal strings, -t/-g to "
+    "scope, -l for file names only, -C N for context."
 )
 
 
@@ -260,7 +261,7 @@ def create_server(
         goal: str | None = None,
         ctx: Context = None,
     ) -> SearchEnvelope:
-        """Run tgrep beneath the server startup directory and return the classified search envelope."""
+        """Run tgrep at the requested search path and return the classified search envelope."""
         try:
             result = await tgrep_runner.run_tgrep(
                 search_root,

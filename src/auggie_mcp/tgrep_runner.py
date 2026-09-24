@@ -75,9 +75,14 @@ def _resolve_beneath(root: Path, path, label: str) -> Path:
 
 
 def resolve_search_path(repository_root, path) -> Path:
-    """Resolve a search directory beneath ``repository_root``."""
+    """Resolve an absolute path or a path beneath ``repository_root``."""
     root = _repository_root(repository_root)
-    resolved = _resolve_beneath(root, path, "search path")
+    candidate = Path(os.fspath(path))
+    resolved = (
+        Path(os.path.realpath(candidate))
+        if candidate.is_absolute()
+        else _resolve_beneath(root, candidate, "search path")
+    )
     if not resolved.exists():
         raise ValueError(f"search path does not exist: {resolved}")
     if not resolved.is_dir() and not resolved.is_file():

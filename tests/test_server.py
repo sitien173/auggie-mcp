@@ -369,6 +369,20 @@ class ServerTest(unittest.TestCase):
                 srv.call_tool("codebase_search", {"pattern": "x", "path": ".."})
             )
 
+    def test_absolute_search_path_outside_root_succeeds(self):
+        outside = Path(self.tmp.name) / "outside"
+        outside.mkdir()
+        srv = make_server(self.repo)
+
+        result = self.run_async(
+            srv.call_tool(
+                "codebase_search", {"pattern": "x", "path": str(outside)}
+            )
+        )
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.structured_content["data"]["exit_code"], 0)
+
     def test_unsupported_search_flag_returns_tool_error(self):
         srv = make_server(self.repo)
         with self.assertRaises(ToolError):

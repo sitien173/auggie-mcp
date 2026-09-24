@@ -115,10 +115,10 @@ Returns a `RetrievalEnvelope`:
 
 ### `codebase_search(pattern, path=".", flags=None, goal=None)`
 
-Runs fast regex or literal repository search using `tgrep` beneath the server root.
+Runs fast regex or literal search using `tgrep`. Relative paths resolve beneath the server startup repository. Absolute paths may target any accessible file or directory.
 
 - `pattern` (`string`, required): Regex or literal search pattern.
-- `path` (`string`, optional, default `.`): Path relative to repository root.
+- `path` (`string`, optional, default `.`): Repository-relative or absolute search path.
 - `flags` (`list[string]`, optional): Supported flags (`-F`, `-t`, `-g`, `-l`, `-C`, etc.).
 - `goal` (`string`, optional): Task context guiding retention scoring. If omitted, falls back to `pattern`.
 
@@ -154,6 +154,7 @@ Returns a `SearchEnvelope`:
 
 ## Privacy
 
+- Absolute search paths allow reading any local file or directory accessible to the server process.
 - Eligible output text chunks may be transmitted to TypeSafe AI over the network for classification and retention scoring.
 - Absolute local repository paths are sanitized and never intentionally sent to TypeSafe AI.
 - No local redaction layer is applied before TypeSafe submission; sensitive strings present in command outputs may leave the local host if an API key is configured.

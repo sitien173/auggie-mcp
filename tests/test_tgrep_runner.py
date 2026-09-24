@@ -41,6 +41,14 @@ class TgrepRunnerTest(unittest.TestCase):
         resolved = tgrep_runner.resolve_search_path(self.repo, "src/main.py")
         self.assertEqual(resolved, self.source)
 
+    def test_absolute_search_path_accepts_path_outside_repository_root(self):
+        outside = Path(self.tmp.name) / "outside"
+        outside.mkdir()
+
+        resolved = tgrep_runner.resolve_search_path(self.repo, outside)
+
+        self.assertEqual(resolved, outside)
+
     def test_search_path_rejects_missing_paths_and_root_escape(self):
         with self.assertRaisesRegex(ValueError, "does not exist"):
             tgrep_runner.resolve_search_path(self.repo, "missing")
