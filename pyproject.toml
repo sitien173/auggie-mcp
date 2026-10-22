@@ -19,3 +19,16 @@ auggie = "auggie_mcp.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/auggie_mcp"]
 include = ["system_prompt.md"]
+
+[dependency-groups]
+dev = [
+    "coverage>=7.16.2",
+]
+
+[tool.coverage.run]
+source = ["auggie_mcp"]
+branch = true
+relative_files = true
+
+[tool.coverage.xml]
+output = "coverage.xml"
