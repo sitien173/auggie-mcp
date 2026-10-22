@@ -11,6 +11,7 @@ from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from auggie_mcp import pi_runner, tgrep_runner
+from auggie_mcp.index_refresh import IndexRefreshError, refresh_index
 from auggie_mcp.output_processing import (
     OutputProcessor,
     RetrievalEnvelope,
@@ -103,6 +104,7 @@ def create_server(
     *,
     executable: str = "pi",
     tgrep_executable: str = "tgrep",
+    ogrep_executable: str = "ogrep",
     repository_root=None,
     client_factory: Callable[[], Any] | None = None,
     processor_factory: Callable[[Any], OutputProcessor] | None = None,
@@ -224,6 +226,10 @@ def create_server(
     ) -> RetrievalEnvelope:
         """Run Pi in ``repository_path`` with ``query`` and return the classified answer envelope."""
         try:
+            await asyncio.gather(
+                refresh_index(tgrep_executable, repository_path),
+                refresh_index(ogrep_executable, repository_path),
+            )
             runner_result = await pi_runner.run_pi(
                 repository_path,
                 query,
@@ -263,6 +269,7 @@ def create_server(
     ) -> SearchEnvelope:
         """Run tgrep at the requested search path and return the classified search envelope."""
         try:
+            await refresh_index(tgrep_executable, search_root)
             result = await tgrep_runner.run_tgrep(
                 search_root,
                 pattern,
@@ -272,7 +279,7 @@ def create_server(
             )
         except asyncio.CancelledError:
             raise
-        except (ValueError, FileNotFoundError) as exc:
+        except (ValueError, FileNotFoundError, IndexRefreshError) as exc:
             raise ToolError(str(exc)) from exc
         if result["exit_code"] not in {0, 1}:
             message = result["stderr"] or (

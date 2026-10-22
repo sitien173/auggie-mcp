@@ -23,17 +23,21 @@ from auggie_mcp.output_processing import (
 TESTS_DIR = Path(__file__).resolve().parent
 FAKE_PI = TESTS_DIR / "fake_pi.py"
 FAKE_TGREP = TESTS_DIR / "fake_tgrep.py"
+FAKE_OGREP = TESTS_DIR / "fake_ogrep.py"
 
 if not os.access(FAKE_PI, os.X_OK):
     os.chmod(FAKE_PI, 0o755)
 if not os.access(FAKE_TGREP, os.X_OK):
     os.chmod(FAKE_TGREP, 0o755)
+if not os.access(FAKE_OGREP, os.X_OK):
+    os.chmod(FAKE_OGREP, 0o755)
 
 
 def make_server(repository_root=None, client_factory=None, processor_factory=None):
     return server.create_server(
         executable=str(FAKE_PI),
         tgrep_executable=str(FAKE_TGREP),
+        ogrep_executable=str(FAKE_OGREP),
         repository_root=repository_root,
         client_factory=client_factory,
         processor_factory=processor_factory,
@@ -315,6 +319,64 @@ class ServerTest(unittest.TestCase):
         srv = make_server(self.repo)
         with self.assertRaisesRegex(ToolError, "regex parse error"):
             self.run_async(srv.call_tool("codebase_search", {"pattern": "bad["}))
+
+    # ---- 3b. Index refresh before every call ---------------------------
+
+    def read_index_log(self, log):
+        return [json.loads(line) for line in log.read_text().splitlines()]
+
+    def test_search_refreshes_tgrep_index_first(self):
+        log = Path(self.tmp.name) / "index.log"
+        srv = make_server(self.repo)
+        with patch.dict(os.environ, {"FAKE_INDEX_LOG": str(log)}):
+            result = self.run_async(
+                srv.call_tool("codebase_search", {"pattern": "hello"})
+            )
+        self.assertFalse(result.is_error)
+        repo = os.path.realpath(self.repo)
+        self.assertEqual(
+            self.read_index_log(log), [["tgrep", ["index", repo], repo]]
+        )
+
+    def test_retrieval_refreshes_tgrep_and_ogrep_indexes_first(self):
+        log = Path(self.tmp.name) / "index.log"
+        srv = make_server()
+        with patch.dict(os.environ, {"FAKE_INDEX_LOG": str(log)}):
+            result = self.run_async(
+                srv.call_tool(
+                    "codebase_retrieval",
+                    {"repository_path": str(self.repo), "query": "q"},
+                )
+            )
+        self.assertFalse(result.is_error)
+        repo = os.path.realpath(self.repo)
+        self.assertCountEqual(
+            self.read_index_log(log),
+            [["tgrep", ["index", repo], repo], ["ogrep", ["index", repo], repo]],
+        )
+
+    def test_search_index_refresh_failure_is_tool_error(self):
+        srv = make_server(self.repo)
+        with patch.dict(os.environ, {"FAKE_INDEX_FAIL": "tgrep"}):
+            with self.assertRaisesRegex(ToolError, "tgrep index boom"):
+                self.run_async(srv.call_tool("codebase_search", {"pattern": "x"}))
+
+    def test_retrieval_index_refresh_failure_is_tool_error(self):
+        srv = make_server()
+        args = {"repository_path": str(self.repo), "query": "q"}
+        with patch.dict(os.environ, {"FAKE_INDEX_FAIL": "ogrep"}):
+            with self.assertRaisesRegex(ToolError, "ogrep index boom"):
+                self.run_async(srv.call_tool("codebase_retrieval", args))
+
+    def test_missing_ogrep_returns_tool_error(self):
+        srv = server.create_server(
+            executable=str(FAKE_PI),
+            tgrep_executable=str(FAKE_TGREP),
+            ogrep_executable="/definitely/missing/ogrep",
+        )
+        args = {"repository_path": str(self.repo), "query": "q"}
+        with self.assertRaisesRegex(ToolError, "ogrep"):
+            self.run_async(srv.call_tool("codebase_retrieval", args))
 
     # ---- 4. Missing API key fail-open ---------------------------------
 
@@ -666,6 +728,8 @@ class ServerTest(unittest.TestCase):
         fake_pi.symlink_to(FAKE_PI)
         fake_tgrep = Path(fake_bin_dir.name) / "tgrep"
         fake_tgrep.symlink_to(FAKE_TGREP)
+        fake_ogrep = Path(fake_bin_dir.name) / "ogrep"
+        fake_ogrep.symlink_to(FAKE_OGREP)
         env["PATH"] = fake_bin_dir.name + os.pathsep + env.get("PATH", "")
         # Ensure fail-open for test determinism without real API key
         env.pop("TYPESAFE_API_KEY", None)

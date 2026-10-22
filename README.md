@@ -150,6 +150,7 @@ Returns a `SearchEnvelope`:
 - **Uncertainty Floor:** Only non-protected chunks scored with retention probability <= `0.1` may be omitted. Omitted contiguous blocks render as deterministic omission markers.
 - **Fail-Open Semantics:** Any API failure, invalid response, timeout, or missing API key fails open. The server returns exact original runner output marked `status: "unclassified"` and `retention: "failed_open"`. Jev errors never become MCP tool errors.
 - **Exit Codes:** Search exit code `1` (no matches found) remains a normal successful MCP call, not a tool error. Operational runner errors (missing executables, path escapes, invalid flags, process crashes) remain MCP tool errors.
+- **Index Refresh:** Before every call the server incrementally updates the search indexes so results reflect current files on disk. `codebase_search` runs `tgrep index` on the server startup repository. `codebase_retrieval` runs `tgrep index` and `ogrep index` on `repository_path` before starting Pi. Unchanged files are skipped. A failed or missing indexer is an MCP tool error.
 - **Lifespan Management:** A single `AsyncTypeSafeClient` is created on server lifespan startup and shared across concurrent calls with SDK retries disabled. It closes cleanly on server shutdown alongside the bounded archive executor.
 
 ## Privacy

@@ -7,7 +7,21 @@ import sys
 import time
 
 
+def fake_index(name):
+    """Record ``<name> index <root>`` in $FAKE_INDEX_LOG; fail if $FAKE_INDEX_FAIL is name."""
+    log = os.environ.get("FAKE_INDEX_LOG")
+    if log:
+        with open(log, "a") as handle:
+            handle.write(json.dumps([name, sys.argv[1:], os.getcwd()]) + "\n")
+    if os.environ.get("FAKE_INDEX_FAIL") == name:
+        sys.stderr.write(f"{name} index boom\n")
+        return 2
+    return 0
+
+
 def main():
+    if sys.argv[1:2] == ["index"]:
+        return fake_index("tgrep")
     explicit_patterns = [
         sys.argv[index + 1]
         for index, value in enumerate(sys.argv[:-1])
