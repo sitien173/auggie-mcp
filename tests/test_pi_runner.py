@@ -98,13 +98,14 @@ class PiRunnerTest(unittest.TestCase):
         args = pi_runner.build_pi_command(self.repo, "what does hello.txt say", prompt)
         expected_flags = [
             "--model",
-            "deepseek/deepseek-v4-flash",
+            "gpt-6-luna",
+            "--thinking",
+            "xhigh",
             "--approve",
             "--print",
             "--no-session",
             "--mode",
             "text",
-            "--no-context-files",
             "--no-extensions",
             "--no-skills",
             "--no-prompt-templates",
