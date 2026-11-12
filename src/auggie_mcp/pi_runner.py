@@ -73,7 +73,7 @@ def build_pi_command(repository, query, system_prompt) -> list:
         "--model",
         "gpt-6-luna",
         "--thinking",
-        "xhigh",
+        "high",
         "--approve",
         "--print",
         "--no-session",
