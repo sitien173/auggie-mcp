@@ -31,7 +31,7 @@ class TestPhase1DependencyAndVersion(unittest.TestCase):
     def test_project_version_in_pyproject(self):
         pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
         content = pyproject_path.read_text(encoding="utf-8")
-        self.assertIn('version = "0.4.0"', content)
+        self.assertIn('version = "0.5.0"', content)
 
     def test_typesafe_sdk_runtime_dependency_declared(self):
         pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
@@ -865,7 +865,7 @@ class TestClassification(unittest.IsolatedAsyncioTestCase):
             ]
         )
         env = await process_search_output(
-            pattern="test",
+            query="test",
             stdout=stdout_text,
             stderr=stderr_text,
             exit_code=0,
@@ -1039,7 +1039,7 @@ class TestGoalState(unittest.IsolatedAsyncioTestCase):
 
         client = FakeTypeSafeClient([make_choice_response({"stdout:1": "reference"})])
         await process_search_output(
-            pattern="fallback search pattern",
+            query="fallback search pattern",
             stdout="sample output\n",
             stderr="",
             exit_code=0,
@@ -1055,7 +1055,7 @@ class TestGoalState(unittest.IsolatedAsyncioTestCase):
         client = FakeTypeSafeClient([make_choice_response({"stdout:1": "reference"})])
         # Actual absolute path inside repository is relativized to safe relative path
         await process_search_output(
-            pattern="find_func",
+            query="find_func",
             stdout="match 1\n",
             stderr="",
             exit_code=0,
@@ -1075,7 +1075,7 @@ class TestGoalState(unittest.IsolatedAsyncioTestCase):
         client = FakeTypeSafeClient([make_choice_response({"stdout:1": "reference"})])
         # Actual absolute path with no repository cannot be safely relativized; must be omitted
         await process_search_output(
-            pattern="find_func",
+            query="find_func",
             stdout="match 1\n",
             stderr="",
             exit_code=0,
@@ -1094,7 +1094,7 @@ class TestGoalState(unittest.IsolatedAsyncioTestCase):
         client = FakeTypeSafeClient([make_choice_response({"stdout:1": "reference"})])
         # Actual absolute path outside repository cannot be relativized; must be omitted
         await process_search_output(
-            pattern="find_func",
+            query="find_func",
             stdout="match 1\n",
             stderr="",
             exit_code=0,
@@ -1112,7 +1112,7 @@ class TestGoalState(unittest.IsolatedAsyncioTestCase):
 
         client = FakeTypeSafeClient([make_choice_response({"stdout:1": "reference"})])
         await process_search_output(
-            pattern="find_func",
+            query="find_func",
             stdout="match 1\n",
             stderr="",
             exit_code=0,
@@ -1131,7 +1131,7 @@ class TestGoalState(unittest.IsolatedAsyncioTestCase):
 
         client = FakeTypeSafeClient([make_choice_response({"stdout:1": "reference"})])
         await process_search_output(
-            pattern="find_func",
+            query="find_func",
             stdout="match 1\n",
             stderr="",
             exit_code=0,
@@ -1149,7 +1149,7 @@ class TestGoalState(unittest.IsolatedAsyncioTestCase):
 
         client = FakeTypeSafeClient([make_choice_response({"stdout:1": "reference"})])
         await process_search_output(
-            pattern="find_func",
+            query="find_func",
             stdout="match 1\n",
             stderr="",
             exit_code=0,
@@ -1167,7 +1167,7 @@ class TestGoalState(unittest.IsolatedAsyncioTestCase):
 
         client = FakeTypeSafeClient([make_choice_response({"stdout:1": "reference"})])
         await process_search_output(
-            pattern="find_func",
+            query="find_func",
             stdout="match 1\n",
             stderr="",
             exit_code=0,
@@ -1185,7 +1185,7 @@ class TestGoalState(unittest.IsolatedAsyncioTestCase):
 
         client = FakeTypeSafeClient([make_choice_response({"stdout:1": "reference"})])
         await process_search_output(
-            pattern="find_func",
+            query="find_func",
             stdout="match 1\n",
             stderr="",
             exit_code=0,
@@ -1226,7 +1226,7 @@ class TestGoalState(unittest.IsolatedAsyncioTestCase):
 
         client = FakeTypeSafeClient([make_choice_response({"stdout:1": "reference"})])
         await process_search_output(
-            pattern="target_pattern",
+            query="target_pattern",
             stdout="out\n",
             stderr="",
             exit_code=0,
@@ -1236,7 +1236,7 @@ class TestGoalState(unittest.IsolatedAsyncioTestCase):
         )
         state = client.calls[0]["state"]
         self.assertEqual(state["tool"], "codebase_search")
-        self.assertEqual(state["tool_input"]["pattern"], "target_pattern")
+        self.assertEqual(state["tool_input"]["query"], "target_pattern")
         self.assertEqual(state["tool_input"]["path"], "relative/path.py")
         self.assertEqual(state["tool_input"]["flags"], ["--count", "-i"])
 
@@ -1297,7 +1297,7 @@ class TestThresholdLifecycle(unittest.IsolatedAsyncioTestCase):
             stderr_text = "b\n" * 5_000
             client = FakeTypeSafeClient()
             env = await process_search_output(
-                pattern="p",
+                query="p",
                 stdout=stdout_text,
                 stderr=stderr_text,
                 exit_code=0,
@@ -1896,7 +1896,7 @@ class TestValidation(unittest.IsolatedAsyncioTestCase):
         stdout = "sample stdout\n"
         stderr = "sample stderr\n"
         env = await process_search_output(
-            pattern="p", stdout=stdout, stderr=stderr, exit_code=0, client=client, batch_size=0
+            query="p", stdout=stdout, stderr=stderr, exit_code=0, client=client, batch_size=0
         )
         self.assertEqual(env["data"]["stdout"], stdout)
         self.assertEqual(env["data"]["stderr"], stderr)
@@ -1913,7 +1913,7 @@ class TestValidation(unittest.IsolatedAsyncioTestCase):
         stdout = "sample stdout\n"
         stderr = "sample stderr\n"
         env = await process_search_output(
-            pattern="p", stdout=stdout, stderr=stderr, exit_code=0, client=client, batch_size=-10
+            query="p", stdout=stdout, stderr=stderr, exit_code=0, client=client, batch_size=-10
         )
         self.assertEqual(env["data"]["stdout"], stdout)
         self.assertEqual(env["data"]["stderr"], stderr)
@@ -2218,7 +2218,7 @@ class TestTimeout(unittest.IsolatedAsyncioTestCase):
         client = FakeTypeSafeClient([make_choice_response({"stdout:1": "reference"})])
         cfg = JevConfig(api_key="test", timeout_seconds=-10.0)
         processor = OutputProcessor(client=client, config=cfg)
-        env = await processor.process_search(pattern="p", stdout="out\n", stderr="", exit_code=0)
+        env = await processor.process_search(query="p", stdout="out\n", stderr="", exit_code=0)
         self.assertEqual(env["processing"]["status"], "unclassified")
         self.assertEqual(env["processing"]["retention"], "failed_open")
 
@@ -2274,7 +2274,7 @@ class TestTimeout(unittest.IsolatedAsyncioTestCase):
         processor = OutputProcessor(client=client, config=cfg)
         with patch("auggie_mcp.output_processing.create_archive", side_effect=slow_archive):
             env = await processor.process_search(
-                pattern="p", stdout=stdout_text, stderr="", exit_code=0
+                query="p", stdout=stdout_text, stderr="", exit_code=0
             )
 
         self.assertEqual(env["data"]["stdout"], stdout_text)
@@ -2447,7 +2447,7 @@ class TestCancellation(unittest.IsolatedAsyncioTestCase):
 
         with patch("auggie_mcp.output_processing.create_archive", side_effect=slow_archive):
             task = asyncio.create_task(
-                processor.process_search(pattern="p", stdout=stdout_text, stderr="", exit_code=0)
+                processor.process_search(query="p", stdout=stdout_text, stderr="", exit_code=0)
             )
             while not archive_started.is_set():
                 await asyncio.sleep(0.001)
@@ -2824,7 +2824,7 @@ class TestArchiveWorkerCleanupAndConcurrency(unittest.IsolatedAsyncioTestCase):
             ):
                 task = asyncio.create_task(
                     processor.process_search(
-                        pattern="p", stdout=stdout_text, stderr="", exit_code=0
+                        query="p", stdout=stdout_text, stderr="", exit_code=0
                     )
                 )
                 try:
@@ -2965,7 +2965,7 @@ class TestArchiveWorkerCleanupAndConcurrency(unittest.IsolatedAsyncioTestCase):
             ):
                 task = asyncio.create_task(
                     processor.process_search(
-                        pattern="p", stdout=stdout_text, stderr="", exit_code=0
+                        query="p", stdout=stdout_text, stderr="", exit_code=0
                     )
                 )
                 try:
@@ -3046,7 +3046,7 @@ class TestAdditionalFailureModes(unittest.IsolatedAsyncioTestCase):
         stdout = "original stdout\n"
         stderr = "original stderr\n"
         env = await process_search_output(
-            pattern="q", stdout=stdout, stderr=stderr, exit_code=0, client=client
+            query="q", stdout=stdout, stderr=stderr, exit_code=0, client=client
         )
         self.assertEqual(env["data"]["stdout"], stdout)
         self.assertEqual(env["data"]["stderr"], stderr)

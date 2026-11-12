@@ -8,12 +8,11 @@ import argparse
 import sys
 import time
 
+from ..index_lock import IndexLock, IndexLockError
 from ..indexer import index_path
 from ..watcher import (
     AuggieWatchService,
     WatchEventHandler,
-    WatchLock,
-    WatchLockError,
     create_observer,
 )
 from ._common import require_embedding_config
@@ -50,11 +49,11 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
     # Enforce one watcher per index. The lock lives next to the SQLite db and is
     # released by the OS when this process exits, even on a crash.
-    lock = WatchLock(db.parent / "watch.lock")
+    lock = IndexLock(db.parent / "index.lock")
     try:
         lock.acquire()
-    except WatchLockError as e:
-        print(f"Error: {e}. Only one watcher per index is allowed.", file=sys.stderr)
+    except IndexLockError as e:
+        print(f"Error: {e}. Only one writer per index is allowed.", file=sys.stderr)
         return 1
 
     def run_incremental_pass(_dirty_paths: set[str] | None = None) -> None:

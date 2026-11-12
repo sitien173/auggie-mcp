@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from ..filetype import FileTypeResult, detect_file_types_batch, has_file_command
+from ..index_lock import IndexLock, IndexLockError
 from ..indexer import IndexStats, index_path, iter_files, load_auggieignore
 from ..models import get_optimal_chunk_lines, get_optimal_overlap
 from ._common import find_git_root, require_embedding_config, resolve_db_path
@@ -541,6 +543,16 @@ def cmd_index(args: argparse.Namespace) -> int:
     overlap = _resolve_overlap(args)
     verbose = getattr(args, "verbose", False)
 
+    lock = IndexLock(db.parent / "index.lock")
+    try:
+        lock.acquire()
+    except IndexLockError as e:
+        if use_json:
+            print(json.dumps({"error": str(e), "error_code": "INDEX_BUSY"}))
+        else:
+            print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     try:
         stats = index_path(
             root=root,
@@ -572,6 +584,8 @@ def cmd_index(args: argparse.Namespace) -> int:
                 _print_model_mismatch_help(str(e), args.model)
             return 1
         raise
+    finally:
+        lock.release()
 
     if use_json:
         output = {

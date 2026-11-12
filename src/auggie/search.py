@@ -53,7 +53,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .db import connect, has_fts5
+from .db import connect, connect_readonly, has_fts5
 from .embed import embed_texts
 from .lance_store import LanceStore, get_lance_dir
 from .models import MODEL_ALIASES
@@ -901,6 +901,8 @@ def query(
     mode: SearchMode | None = None,
     no_cache: bool = False,
     branch: str | None = None,
+    *,
+    readonly: bool = False,
 ) -> tuple[list[Hit], bool]:
     """
     Perform search against the indexed codebase.
@@ -922,6 +924,8 @@ def query(
         no_cache: Disable L1/L2 caching for this query (default: False).
         branch: Git branch to search (None for auto-detect from current).
             Only files indexed on this branch will be searched.
+        readonly: Open the database through ``connect_readonly``, which never
+            creates, migrates, or writes it, and raises when ``connect`` would.
 
     Returns:
         Tuple of (hits, fts_available):
@@ -947,7 +951,7 @@ def query(
     if mode is None:
         mode = DEFAULT_SEARCH_MODE
 
-    con = connect(db_path, init_fts=False)
+    con = connect_readonly(db_path) if readonly else connect(db_path, init_fts=False)
     cache_con = None
 
     def _finish(result_hits: list[Hit], result_fts_available: bool) -> tuple[list[Hit], bool]:

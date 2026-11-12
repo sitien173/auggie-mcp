@@ -4,15 +4,14 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, Literal, Sequence
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 
-from auggie.mcp_tools import register_tools
-from auggie_mcp import agent_runner, rg_runner, telemetry
-from auggie_mcp.index_refresh import refresh_index
+from auggie_mcp import agent_runner, index_tools, rg_runner, semantic_search, telemetry
 from auggie_mcp.output_processing import (
     OutputProcessor,
     RetrievalEnvelope,
@@ -23,65 +22,73 @@ from auggie_mcp.output_processing import (
 )
 
 _TOOL_DESCRIPTION = """
-
-IMPORTANT: This is the primary tool for searching the codebase. Please consider as the **FIRST CHOICE** for any codebase searches.
-
-This MCP tool is Augment's context engine, the world's best codebase context engine. It:
-
-1. Takes in a natural language description of the code you are looking for.
-2. Uses a proprietary retrieval/embedding model suite that produces the highest-quality recall of relevant code snippets from across the codebase.
-3. Maintains a real-time index of the codebase, so the results are always up-to-date and reflect the current state of the codebase.
-4. Can retrieve across different programming languages.
-5. Only reflects the current state of the codebase on the disk, and has no information on version control or code history.
-
-## Execution Model
+Answer a question about a codebase by running a retrieval agent over it and returning a synthesized, pruned answer.
 
 This tool is LONG RUNNING. A single call typically takes several minutes.
 
 - Run it as a background task and wait for it to complete.
-- Do NOT explore or try to understand the codebase yourself while this tool is running. Do not read files, grep, or spawn search agents in the meantime.
-- Do NOT call this tool again for the same question while a call is in flight.
-- Wait for the result, then act on it. The returned answer replaces the exploration you would otherwise do.
+- Do NOT explore the codebase yourself while it runs. Do not read files, grep, or spawn search agents in the meantime.
+- Do NOT call it again for the same question while a call is in flight.
+- The agent can edit files, so this tool is not read-only.
+- It reads the files on disk and has no information on version control or code history. It does not use or update the semantic index.
 
 ## When to Use
 
-Use `codebase-retrieval` in the following cases:
-
-- When you don't know which files contain the information you need.
-- When you want to gather high-level information about the task you are trying to accomplish.
-- When you want to gather information about the codebase in general.
-
-### Good Queries
+Use `codebase_retrieval` only when you need a synthesized answer and do not know which files hold the information, for example:
 
 - "Where is the function that handles user authentication?"
 - "What tests are there for the login functionality?"
 - "How is the database connected to the application?"
 
-### Bad Queries (use other tools instead)
-
-- "Find definition of constructor of class Foo" — use `codebase_search` instead.
-- "Find all references to function bar" — use `codebase_search` instead.
-- "Show me how Checkout class is used in services/payment.py" — use file view instead.
-- "Show context of the file foo.py" — use file view instead.
-
-## Tool Selection Rule
-
-**ALWAYS** use `codebase-retrieval` when you're unsure of exact file locations. Use `codebase_search` when you want to find ALL occurrences of a known identifier across the codebase, or when searching within specific files.
+For known literals and symbols, use `codebase_search` with `mode="exact"`. For a ranked list of code that matches a concept, use `index_status`, then `index_update` if needed, then `codebase_search` with `mode="semantic"`. To read a known file, use file view.
 
 ## Parameters
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `repository_path` | `string` | Yes | Absolute path to the directory/repository you want to search. |
+| `repository_path` | `string` | Yes | Absolute path to the directory or repository you want to search. |
 | `query` | `string` | Yes | A description of the information you need from the codebase. |
 | `goal` | `string` | No | Optional specific task or question guiding retention pruning. Defaults to query. |"""
 
-_SEARCH_TOOL_DESCRIPTION = (
-    "Fast regex search over files or directories. Relative paths resolve beneath "
-    "the server startup repository. Absolute paths may target any accessible "
-    "location. ripgrep-compatible flags. Use -F for literal strings, -t/-g to "
-    "scope, -l for file names only, -C N for context."
+_INDEX_STATUS_DESCRIPTION = (
+    "Inspect the semantic index of a repository without changing it. Returns whether "
+    "the index exists, its model, dimensions, file and chunk counts, the last index "
+    "time, stale counts (modified, deleted, candidate_added), and a next_step. "
+    "candidate_added counts files the indexer may add and can overcount binary files."
 )
+
+_INDEX_UPDATE_DESCRIPTION = (
+    "Build or refresh the semantic index of a repository. By default the update is "
+    "incremental and reuses the indexed model; the first call builds the index. "
+    "rebuild=True deletes the existing index first and then rebuilds it, so an "
+    "interrupted rebuild can leave no index; index_status then reports exists=false. "
+    "Calls Voyage and incurs charges; charges already incurred are not recovered "
+    "if the call is cancelled or times out. Fails if another update is running. "
+    "Requires VOYAGE_API_KEY in the server environment. The timeout is "
+    "AUGGIE_INDEX_TIMEOUT_S seconds, default 1800."
+)
+
+
+_SEARCH_TOOL_DESCRIPTION = (
+    "Search a repository in one of two modes. mode='exact' (default) runs ripgrep for "
+    "literals, symbols, and regexes; it needs no index. Relative paths resolve beneath "
+    "the server startup repository and absolute paths may target any accessible "
+    "location. Accepts ripgrep-compatible flags: -F for literal strings, -t/-g to "
+    "scope, -l for file names only, -C N for context. mode='semantic' returns the "
+    "highest-ranked indexed code chunks for a concept query, rendered as "
+    "'path:start-end score=<score>' followed by the code, with blocks separated by "
+    "'--'. It requires an index: call index_status, then index_update if the index is "
+    "missing or stale. Semantic search never updates the index, and data.index reports "
+    "how many indexed files are stale. A path below the repository root limits results "
+    "to that subtree and can return fewer than top_k hits. flags apply only to "
+    "mode='exact'. top_k (1 to 50, default 10) and context_lines (0 to 20, default 0) "
+    "apply only to mode='semantic'. An empty result is a normal result with exit_code 1."
+)
+
+_INSTRUCTIONS = """\
+1. Use `codebase_search` with `mode=exact` for known literals and symbols. It needs no index.
+2. For concept queries, call `index_status`. If the index is missing or stale, call `index_update`, then `codebase_search` with `mode=semantic`.
+3. Use `codebase_retrieval` only for a synthesized answer. It is slow and runs an agent."""
 
 
 def _client_info(ctx: Any) -> dict[str, Any] | None:
@@ -116,7 +123,7 @@ def create_server(
     *,
     executable: str | None = None,
     rg_executable: str = "rg",
-    semantic_executable: str = "auggie",
+    index_command: Sequence[str] | None = None,
     repository_root=None,
     client_factory: Callable[[], Any] | None = None,
     processor_factory: Callable[[Any], OutputProcessor] | None = None,
@@ -183,7 +190,8 @@ def create_server(
         name="auggie-mcp",
         title="Auggie Codebase Search",
         description="Semantic retrieval and fast exact repository search.",
-        version="0.3.0",
+        version="0.5.0",
+        instructions=_INSTRUCTIONS,
         lifespan=lifespan,
     )
 
@@ -242,6 +250,7 @@ def create_server(
     @server.tool(
         name="codebase_retrieval",
         description=_TOOL_DESCRIPTION,
+        annotations=ToolAnnotations(read_only_hint=False, open_world_hint=True),
     )
     async def codebase_retrieval(
         repository_path: str,
@@ -260,8 +269,6 @@ def create_server(
         error: BaseException | None = None
         try:
             try:
-                with record.stage("index_refresh"):
-                    await refresh_index(semantic_executable, repository_path)
                 with record.stage("runner"):
                     try:
                         runner_result = await agent_runner.run_agent(
@@ -318,20 +325,25 @@ def create_server(
     @server.tool(
         name="codebase_search",
         description=_SEARCH_TOOL_DESCRIPTION,
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
     )
     async def codebase_search(
-        pattern: str,
+        query: str,
         path: str = ".",
+        mode: Literal["exact", "semantic"] = "exact",
         flags: list[str] | None = None,
+        top_k: int = 10,
+        context_lines: int = 0,
         goal: str | None = None,
         ctx: Context = None,
     ) -> SearchEnvelope:
-        """Run rg at the requested search path and return the classified search envelope."""
+        """Search exactly with ripgrep or semantically through the index and return the classified search envelope."""
         record = telemetry.CallRecord(
             "mcp",
             "codebase_search",
             {
-                "pattern": pattern,
+                "query": query,
+                "mode": mode,
                 "path": path,
                 "flags": flags,
                 "goal": goal,
@@ -342,21 +354,38 @@ def create_server(
         outcome = "error"
         error: BaseException | None = None
         try:
+            semantic_search.validate_params(
+                mode, flags=flags, top_k=top_k, context_lines=context_lines
+            )
+            index_info = None
             try:
                 with record.stage("runner"):
-                    result = await rg_runner.run_rg(
-                        search_root,
-                        pattern,
-                        path,
-                        flags,
-                        executable=rg_executable,
-                    )
+                    if mode == "semantic":
+                        result = await asyncio.to_thread(
+                            semantic_search.run_semantic,
+                            search_root,
+                            query,
+                            path,
+                            top_k,
+                            context_lines,
+                        )
+                        index_info = result["index"]
+                    else:
+                        result = await rg_runner.run_rg(
+                            search_root,
+                            query,
+                            path,
+                            flags,
+                            executable=rg_executable,
+                        )
                 record.set_runner(
                     exit_code=result["exit_code"],
                     stdout_bytes=_utf8_len(result["stdout"]),
                     stderr_bytes=_utf8_len(result["stderr"]),
                 )
             except asyncio.CancelledError:
+                raise
+            except ToolError:
                 raise
             except (ValueError, FileNotFoundError) as exc:
                 raise ToolError(str(exc)) from exc
@@ -366,11 +395,11 @@ def create_server(
                 )
                 raise ToolError(message)
 
-            effective_goal = goal if goal is not None else pattern
+            effective_goal = goal if goal is not None else query
             async with _processor_scope(ctx) as processor:
                 with record.stage("processing"):
                     envelope = await processor.process_search(
-                        pattern=pattern,
+                        query=query,
                         stdout=result["stdout"],
                         stderr=result["stderr"],
                         exit_code=result["exit_code"],
@@ -378,6 +407,8 @@ def create_server(
                         flags=flags,
                         goal=effective_goal,
                         repository=search_root,
+                        mode=mode,
+                        index=index_info,
                     )
             try:
                 record.set_processing(
@@ -396,7 +427,97 @@ def create_server(
         finally:
             record.finish(outcome, error)
 
-    register_tools(server)
+    @server.tool(
+        name="index_status",
+        description=_INDEX_STATUS_DESCRIPTION,
+        annotations=ToolAnnotations(
+            read_only_hint=True, idempotent_hint=True, open_world_hint=False
+        ),
+    )
+    async def index_status(
+        repository_path: str, ctx: Context = None
+    ) -> dict[str, Any]:
+        """Report whether the semantic index exists, its counts, and how stale it is."""
+        record = telemetry.CallRecord(
+            "mcp",
+            "index_status",
+            {"repository_path": repository_path},
+            client=_client_info(ctx),
+        )
+        outcome = "error"
+        error: BaseException | None = None
+        try:
+            try:
+                with record.stage("status"):
+                    result = await asyncio.to_thread(
+                        index_tools.index_status, repository_path
+                    )
+            except asyncio.CancelledError:
+                raise
+            except ToolError:
+                raise
+            except (ValueError, FileNotFoundError) as exc:
+                raise ToolError(str(exc)) from exc
+            outcome = "ok"
+            return result
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            record.finish(outcome, error)
+
+    @server.tool(
+        name="index_update",
+        description=_INDEX_UPDATE_DESCRIPTION,
+        annotations=ToolAnnotations(
+            read_only_hint=False, destructive_hint=True, open_world_hint=True
+        ),
+    )
+    async def index_update(
+        repository_path: str, rebuild: bool = False, ctx: Context = None
+    ) -> dict[str, Any]:
+        """Build or refresh the semantic index, or delete and rebuild it with ``rebuild=True``."""
+        record = telemetry.CallRecord(
+            "mcp",
+            "index_update",
+            {"repository_path": repository_path, "rebuild": rebuild},
+            client=_client_info(ctx),
+        )
+        outcome = "error"
+        error: BaseException | None = None
+
+        async def report_progress(progress, total, message):
+            if ctx is not None:
+                await ctx.report_progress(progress, total, message)
+
+        try:
+            try:
+                with record.stage("indexer"):
+                    result = await index_tools.run_index_update(
+                        repository_path,
+                        rebuild=rebuild,
+                        command=index_command,
+                        report_progress=report_progress,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except ToolError:
+                raise
+            except (ValueError, FileNotFoundError) as exc:
+                raise ToolError(str(exc)) from exc
+            outcome = "ok"
+            return result
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            record.finish(outcome, error)
 
     return server
 

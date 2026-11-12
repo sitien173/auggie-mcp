@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
+from ..index_lock import IndexLock, IndexLockError
 from ..indexer import index_path
 from ..models import get_optimal_chunk_lines, get_optimal_overlap
 from ._common import find_git_root, require_embedding_config, resolve_db_path
@@ -82,72 +84,87 @@ def cmd_reindex(args: argparse.Namespace) -> int:
     if overlap is None:
         overlap = get_optimal_overlap(args.model)
 
-    # Remove existing database and cache
-    removed_existing = False
-    cache_removed = False
-    if db.exists():
-        db.unlink()
-        removed_existing = True
-
-        # Also delete cache file if it exists
-        from ..cache import get_cache_path
-
-        cache_path = get_cache_path(db)
-        if cache_path.exists():
-            cache_path.unlink()
-            cache_removed = True
-
-        if not use_json:
-            print(f"Removed existing index at {db}")
-            if cache_removed:
-                print(f"Removed cache at {cache_path}")
-
-    # Also wipe the Lance vector store so it is rebuilt from scratch; otherwise
-    # stale vectors with old chunk_ids remain orphaned after the SQLite reset.
-    import shutil
-
-    from ..lance_store import get_lance_dir
-
-    lance_dir = get_lance_dir(db)
-    if lance_dir.exists():
-        shutil.rmtree(lance_dir, ignore_errors=True)
-
-    # Reindex
+    # Hold the shared index lock before deleting anything so a busy index is
+    # never removed.
+    lock = IndexLock(db.parent / "index.lock")
     try:
-        stats = index_path(
-            root=root,
-            db_path=db,
-            model=args.model,
-            dimensions=args.dimensions,
-            chunk_lines=chunk_lines,
-            overlap=overlap,
-            max_bytes=args.max_bytes,
-            exclude=args.exclude,
-            include=args.include,
-            ast=getattr(args, "ast", False),
-        )
-    except KeyboardInterrupt:
+        lock.acquire()
+    except IndexLockError as e:
         if use_json:
-            print(json.dumps({"error": "Interrupted by user (Ctrl-C)"}))
+            print(json.dumps({"error": str(e), "error_code": "INDEX_BUSY"}))
         else:
-            print("\n\nInterrupted by user (Ctrl-C).")
-            print("Partial progress may have been saved to the index.")
-            print("Run 'auggie reindex .' again to rebuild from scratch.")
-        return 130  # Standard SIGINT exit code (128 + 2)
+            print(f"Error: {e}", file=sys.stderr)
+        return 1
 
-    # Log reindex action to history (overrides the "index" entry from index_path)
-    # We update the most recent entry to be "reindex" for clarity
-    # Note: db_version is already incremented by index_path, no need to increment again
-    con = sqlite3.connect(str(db))
     try:
-        con.execute(
-            "UPDATE index_history SET action = 'reindex' WHERE id = (SELECT MAX(id) FROM index_history)"
-        )
-        con.commit()
-    except sqlite3.OperationalError:
-        pass  # History table might not exist in older databases
+        # Remove existing database and cache
+        removed_existing = False
+        cache_removed = False
+        if db.exists():
+            db.unlink()
+            removed_existing = True
+
+            # Also delete cache file if it exists
+            from ..cache import get_cache_path
+
+            cache_path = get_cache_path(db)
+            if cache_path.exists():
+                cache_path.unlink()
+                cache_removed = True
+
+            if not use_json:
+                print(f"Removed existing index at {db}")
+                if cache_removed:
+                    print(f"Removed cache at {cache_path}")
+
+        # Also wipe the Lance vector store so it is rebuilt from scratch; otherwise
+        # stale vectors with old chunk_ids remain orphaned after the SQLite reset.
+        import shutil
+
+        from ..lance_store import get_lance_dir
+
+        lance_dir = get_lance_dir(db)
+        if lance_dir.exists():
+            shutil.rmtree(lance_dir, ignore_errors=True)
+
+        # Reindex
+        try:
+            stats = index_path(
+                root=root,
+                db_path=db,
+                model=args.model,
+                dimensions=args.dimensions,
+                chunk_lines=chunk_lines,
+                overlap=overlap,
+                max_bytes=args.max_bytes,
+                exclude=args.exclude,
+                include=args.include,
+                ast=getattr(args, "ast", False),
+            )
+        except KeyboardInterrupt:
+            if use_json:
+                print(json.dumps({"error": "Interrupted by user (Ctrl-C)"}))
+            else:
+                print("\n\nInterrupted by user (Ctrl-C).")
+                print("Partial progress may have been saved to the index.")
+                print("Run 'auggie reindex .' again to rebuild from scratch.")
+            return 130  # Standard SIGINT exit code (128 + 2)
+
+        # Log reindex action to history (overrides the "index" entry from index_path)
+        # We update the most recent entry to be "reindex" for clarity
+        # Note: db_version is already incremented by index_path, no need to increment again
+        con = sqlite3.connect(str(db))
+        try:
+            con.execute(
+                "UPDATE index_history SET action = 'reindex' WHERE id = (SELECT MAX(id) FROM index_history)"
+            )
+            con.commit()
+        except sqlite3.OperationalError:
+            pass  # History table might not exist in older databases
+        finally:
+            con.close()
     finally:
-        con.close()
+        lock.release()
 
     if use_json:
         result = {

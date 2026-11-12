@@ -12,8 +12,9 @@ Use Auggie before manual repository exploration.
 
 Use the MCP tools when available.
 
-- Use `mcp__auggie__codebase_retrieval` for semantic questions.
-- Use `mcp__auggie__codebase_search` for exact symbols, literals, files, and regexes.
+- Use `mcp__auggie__codebase_search` with `mode="exact"` (default) for exact symbols, literals, files, and regexes. Pass the pattern as `query`.
+- For concept queries, call `mcp__auggie__index_status`. If the index is missing or stale, call `mcp__auggie__index_update`. Then call `mcp__auggie__codebase_search` with `mode="semantic"`. Semantic search never updates the index.
+- Use `mcp__auggie__codebase_retrieval` only for a synthesized answer. It is slow, runs an agent, and does not use the index.
 - Use `Read` only after a search identifies a file path.
 
 ## CLI fallback

@@ -12,36 +12,36 @@ sys.modules.setdefault(
     "tqdm", types.SimpleNamespace(tqdm=lambda iterable=None, **kwargs: iterable)
 )
 
-from auggie.watcher import WatchLock, WatchLockError
+from auggie.index_lock import IndexLock, IndexLockError
 
 
 class WatchLockTest(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(mkdtemp(prefix="auggie-watchlock-"))
-        self.lock_path = self.root / ".auggie" / "watch.lock"
+        self.lock_path = self.root / ".auggie" / "index.lock"
 
     def test_second_acquire_same_index_is_refused(self) -> None:
-        first = WatchLock(self.lock_path)
+        first = IndexLock(self.lock_path)
         first.acquire()
         try:
-            second = WatchLock(self.lock_path)
-            with self.assertRaises(WatchLockError):
+            second = IndexLock(self.lock_path)
+            with self.assertRaises(IndexLockError):
                 second.acquire()
         finally:
             first.release()
 
     def test_release_frees_lock_for_next_acquire(self) -> None:
-        first = WatchLock(self.lock_path)
+        first = IndexLock(self.lock_path)
         first.acquire()
         first.release()
 
-        second = WatchLock(self.lock_path)
+        second = IndexLock(self.lock_path)
         second.acquire()  # must not raise now
         second.release()
 
     def test_different_index_is_independent(self) -> None:
-        a = WatchLock(self.lock_path)
-        b = WatchLock(self.root / "other" / "watch.lock")
+        a = IndexLock(self.lock_path)
+        b = IndexLock(self.root / "other" / "index.lock")
         a.acquire()
         try:
             b.acquire()  # different file, must not raise

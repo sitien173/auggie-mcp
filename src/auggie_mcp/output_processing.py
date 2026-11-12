@@ -127,10 +127,18 @@ class RetrievalEnvelope(TypedDict):
     processing: ProcessingMetadata
 
 
+class SearchIndexInfo(TypedDict):
+    stale_modified: int
+    stale_deleted: int
+    last_indexed: Optional[str]
+
+
 class SearchData(TypedDict):
     stdout: str
     stderr: str
     exit_code: int
+    mode: Literal["exact", "semantic"]
+    index: Optional[SearchIndexInfo]
 
 
 class SearchEnvelope(TypedDict):
@@ -992,6 +1000,8 @@ def build_fail_open_search(
     chunks: Sequence[Chunk],
     estimated_tokens: int,
     recovery_path: Optional[str] = None,
+    mode: Literal["exact", "semantic"] = "exact",
+    index: Optional[SearchIndexInfo] = None,
 ) -> SearchEnvelope:
     """Construct fail-open search envelope with exact original outputs and unknown categories."""
     fail_chunks: List[ChunkMetadata] = []
@@ -1006,6 +1016,8 @@ def build_fail_open_search(
             "stdout": original_stdout,
             "stderr": original_stderr,
             "exit_code": exit_code,
+            "mode": mode,
+            "index": index,
         },
         "processing": {
             "status": "unclassified",
@@ -1178,7 +1190,7 @@ class OutputProcessor:
 
     async def process_search(
         self,
-        pattern: str,
+        query: str,
         stdout: str,
         stderr: str,
         exit_code: int,
@@ -1186,6 +1198,8 @@ class OutputProcessor:
         flags: Optional[Sequence[str]] = None,
         goal: Optional[str] = None,
         repository: Optional[str | Path] = None,
+        mode: Literal["exact", "semantic"] = "exact",
+        index: Optional[SearchIndexInfo] = None,
     ) -> SearchEnvelope:
         sources = [("stdout", stdout), ("stderr", stderr)]
         chunks = chunk_result(sources)
@@ -1198,6 +1212,8 @@ class OutputProcessor:
                     "stdout": stdout,
                     "stderr": stderr,
                     "exit_code": exit_code,
+                    "mode": mode,
+                    "index": index,
                 },
                 "processing": {
                     "status": "classified",
@@ -1216,11 +1232,11 @@ class OutputProcessor:
             cfg = self.config
             client = self.client
             assert client is not None
-            effective_goal = goal.strip() if goal and goal.strip() else pattern
+            effective_goal = goal.strip() if goal and goal.strip() else query
             safe_path = sanitize_search_path(path, repository=repository)
             safe_flags = sanitize_search_flags(flags, repository=repository)
 
-            tool_input: Dict[str, Any] = {"pattern": pattern}
+            tool_input: Dict[str, Any] = {"query": query, "mode": mode}
             if safe_path is not None:
                 tool_input["path"] = safe_path
             if safe_flags is not None:
@@ -1245,6 +1261,8 @@ class OutputProcessor:
                         "stdout": stdout,
                         "stderr": stderr,
                         "exit_code": exit_code,
+                        "mode": mode,
+                        "index": index,
                     },
                     "processing": {
                         "status": "classified",
@@ -1298,6 +1316,8 @@ class OutputProcessor:
                     "stdout": rendered_by_source.get("stdout", ""),
                     "stderr": rendered_by_source.get("stderr", ""),
                     "exit_code": exit_code,
+                    "mode": mode,
+                    "index": index,
                 },
                 "processing": {
                     "status": "classified",
@@ -1311,7 +1331,14 @@ class OutputProcessor:
         return await self._execute_pass(
             _run_pass,
             lambda: build_fail_open_search(
-                stdout, stderr, exit_code, chunks, estimated_tokens, recovery_path=None
+                stdout,
+                stderr,
+                exit_code,
+                chunks,
+                estimated_tokens,
+                recovery_path=None,
+                mode=mode,
+                index=index,
             ),
             archive_op,
         )
@@ -1408,7 +1435,7 @@ async def process_retrieval_output(
 
 
 async def process_search_output(
-    pattern: str,
+    query: str,
     stdout: str,
     stderr: str,
     exit_code: int,
@@ -1416,6 +1443,8 @@ async def process_search_output(
     flags: Optional[Sequence[str]] = None,
     goal: Optional[str] = None,
     repository: Optional[str | Path] = None,
+    mode: Literal["exact", "semantic"] = "exact",
+    index: Optional[SearchIndexInfo] = None,
     client: Optional[AsyncTypeSafeClientProtocol] = None,
     config: Optional[JevConfig] = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
@@ -1423,7 +1452,7 @@ async def process_search_output(
     """Convenience function processing search output with Jev pipeline."""
     processor = OutputProcessor(client=client, config=config, batch_size=batch_size)
     return await processor.process_search(
-        pattern=pattern,
+        query=query,
         stdout=stdout,
         stderr=stderr,
         exit_code=exit_code,
@@ -1431,4 +1460,6 @@ async def process_search_output(
         flags=flags,
         goal=goal,
         repository=repository,
+        mode=mode,
+        index=index,
     )

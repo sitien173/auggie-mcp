@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from urllib.parse import quote
 
 #: SQL schema for the auggie database.
 #: Uses WAL journal mode for performance and foreign keys for integrity.
@@ -74,8 +75,10 @@ CREATE TABLE IF NOT EXISTS index_metadata (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-INSERT OR REPLACE INTO index_metadata (key, value, updated_at)
-VALUES ('schema_version', '2', datetime('now'));
+INSERT INTO index_metadata (key, value, updated_at)
+VALUES ('schema_version', '2', datetime('now'))
+ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+WHERE index_metadata.value != excluded.value;
 """
 
 #: FTS5 schema for full-text search on chunk text.
@@ -108,6 +111,10 @@ class DatabaseError(Exception):
     """Raised when database operations fail with helpful context."""
 
     pass
+
+
+class SchemaOutdatedError(DatabaseError):
+    """Raised by read-only access when ``connect`` would migrate or upgrade the schema."""
 
 
 def connect(db_path: Path, init_fts: bool = True) -> sqlite3.Connection:
@@ -198,6 +205,26 @@ def connect(db_path: Path, init_fts: bool = True) -> sqlite3.Connection:
             # FTS5 not available in this SQLite build - silently continue
             pass
 
+    return con
+
+
+def connect_readonly(db_path: Path) -> sqlite3.Connection:
+    """
+    Open an existing auggie database read-only and check its schema without changing it.
+
+    Unlike ``connect`` this never creates the database, sets the journal mode,
+    creates tables, migrates, or writes metadata. A schema that ``connect`` would
+    migrate raises ``SchemaOutdatedError``; one it rejects raises ``DatabaseError``.
+    A missing or unreadable file raises ``sqlite3.OperationalError``.
+    """
+    con = sqlite3.connect(f"file:{quote(str(db_path))}?mode=ro", uri=True)
+    try:
+        con.execute("PRAGMA foreign_keys=ON")
+        _validate_chunks_schema(con, write_version=False)
+        _migrate_branch_column(con, apply=False)
+    except BaseException:
+        con.close()
+        raise
     return con
 
 
@@ -339,7 +366,7 @@ def get_all_metadata(con: sqlite3.Connection) -> dict[str, str]:
     return dict(rows)
 
 
-def _migrate_branch_column(con: sqlite3.Connection) -> bool:
+def _migrate_branch_column(con: sqlite3.Connection, apply: bool = True) -> bool:
     """
     Migrate existing database to add branch column if missing.
 
@@ -355,6 +382,7 @@ def _migrate_branch_column(con: sqlite3.Connection) -> bool:
 
     Args:
         con: Open database connection.
+        apply: When False, raise ``SchemaOutdatedError`` instead of migrating.
 
     Returns:
         True if migration was performed, False if already migrated.
@@ -365,6 +393,11 @@ def _migrate_branch_column(con: sqlite3.Connection) -> bool:
 
     if "branch" in column_names:
         return False  # Already migrated
+
+    if not apply:
+        raise SchemaOutdatedError(
+            "Index schema is outdated: the files table has no branch column."
+        )
 
     # SQLite doesn't allow dropping auto-generated unique indexes,
     # so we need to recreate the table with the new schema
@@ -398,12 +431,15 @@ def _migrate_branch_column(con: sqlite3.Connection) -> bool:
     return True
 
 
-def _validate_chunks_schema(con: sqlite3.Connection) -> None:
+def _validate_chunks_schema(con: sqlite3.Connection, write_version: bool = True) -> None:
     """
     Validate the Phase 2 chunks schema.
 
     Phase 2 is a rebuild-from-scratch migration. Old indexes that still
     store embeddings in SQLite must be reset and rebuilt.
+
+    With ``write_version=False`` nothing is written; an index whose recorded
+    ``schema_version`` is not current raises ``SchemaOutdatedError`` instead.
     """
     columns = con.execute("PRAGMA table_info(chunks)").fetchall()
     if not columns:
@@ -434,10 +470,23 @@ def _validate_chunks_schema(con: sqlite3.Connection) -> None:
             "Run 'auggie reset -f' and then 'auggie index .' to rebuild the index."
         )
 
+    if not write_version:
+        row = con.execute(
+            "SELECT value FROM index_metadata WHERE key = 'schema_version'"
+        ).fetchone()
+        if row is None or row[0] != CURRENT_SCHEMA_VERSION:
+            raise SchemaOutdatedError(
+                "Index schema is outdated: schema_version is not "
+                f"{CURRENT_SCHEMA_VERSION}."
+            )
+        return
+
     con.execute(
         """
-        INSERT OR REPLACE INTO index_metadata (key, value, updated_at)
+        INSERT INTO index_metadata (key, value, updated_at)
         VALUES ('schema_version', ?, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        WHERE index_metadata.value != excluded.value
         """,
         (CURRENT_SCHEMA_VERSION,),
     )

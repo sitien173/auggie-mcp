@@ -57,7 +57,7 @@ def make_server(repository_root=None, client_factory=None, processor_factory=Non
     return server.create_server(
         executable=str(FAKE_PI),
         rg_executable=str(FAKE_RG),
-        semantic_executable=str(FAKE_AUGGIE),
+        index_command=[os.sys.executable, str(FAKE_AUGGIE)],
         repository_root=repository_root,
         client_factory=client_factory,
         processor_factory=processor_factory,
@@ -108,34 +108,53 @@ class ServerTest(unittest.TestCase):
 
     # ---- 1. Tool discovery and schemas ---------------------------------
 
-    def test_discovery_exposes_retrieval_and_search(self):
+    def test_discovery_exposes_exactly_four_tools(self):
         srv = make_server()
         tools = self.run_async(srv.list_tools())
-        names = [t.name for t in tools]
         self.assertEqual(
-            names,
-            [
-                "codebase_retrieval",
-                "codebase_search",
-                "auggie_query",
-                "auggie_context",
-                "auggie_status",
-            ],
+            [t.name for t in tools],
+            ["codebase_retrieval", "codebase_search", "index_status", "index_update"],
         )
 
-    def test_semantic_tool_schemas_expose_expected_properties(self):
+    def test_tool_annotations(self):
         srv = make_server()
-        tools = {t.name: t for t in self.run_async(srv.list_tools())}
+        tools = {t.name: t.annotations for t in self.run_async(srv.list_tools())}
         expected = {
-            "auggie_query": {"query", "repo_path", "top_k", "mode"},
-            "auggie_context": {"query", "repo_path", "top_k", "context_lines"},
-            "auggie_status": {"repo_path"},
+            "codebase_search": {"readOnlyHint": True, "openWorldHint": True},
+            "codebase_retrieval": {"readOnlyHint": False, "openWorldHint": True},
+            "index_status": {
+                "readOnlyHint": True,
+                "idempotentHint": True,
+                "openWorldHint": False,
+            },
+            "index_update": {
+                "readOnlyHint": False,
+                "destructiveHint": True,
+                "openWorldHint": True,
+            },
         }
-        for name, props in expected.items():
+        for name, hints in expected.items():
             with self.subTest(tool=name):
-                self.assertEqual(
-                    set(tools[name].input_schema["properties"]), props
-                )
+                dumped = tools[name].model_dump(exclude_none=True, by_alias=True)
+                for key, value in hints.items():
+                    self.assertEqual(dumped[key], value)
+
+    def test_server_instructions_describe_the_workflow(self):
+        srv = make_server()
+        instructions = srv.instructions
+        self.assertTrue(instructions)
+        for name in ("codebase_search", "index_status", "index_update", "codebase_retrieval"):
+            self.assertIn(name, instructions)
+
+    def test_descriptions_name_only_registered_tools(self):
+        srv = make_server()
+        tools = self.run_async(srv.list_tools())
+        for tool in tools:
+            with self.subTest(tool=tool.name):
+                self.assertNotIn("real-time index", tool.description)
+                self.assertNotIn("codebase-retrieval", tool.description)
+                for suffix in ("query", "context", "status"):
+                    self.assertNotIn(f"auggie_{suffix}", tool.description)
 
     def test_no_resources_or_prompts(self):
         srv = make_server()
@@ -144,7 +163,7 @@ class ServerTest(unittest.TestCase):
 
     def test_server_advertised_version_is_0_2_0(self):
         srv = make_server()
-        self.assertEqual(srv.version, "0.3.0")
+        self.assertEqual(srv.version, "0.5.0")
 
     def test_retrieval_tool_schema_matches_phase3_contract(self):
         srv = make_server()
@@ -176,9 +195,15 @@ class ServerTest(unittest.TestCase):
         tools = self.run_async(srv.list_tools())
         tool = next(t for t in tools if t.name == "codebase_search")
         props = tool.input_schema["properties"]
-        self.assertEqual(set(props), {"pattern", "path", "flags", "goal"})
-        self.assertEqual(set(tool.input_schema["required"]), {"pattern"})
+        self.assertEqual(
+            set(props),
+            {"query", "path", "mode", "flags", "top_k", "context_lines", "goal"},
+        )
+        self.assertEqual(set(tool.input_schema["required"]), {"query"})
         self.assertEqual(props["path"]["default"], ".")
+        self.assertEqual(props["mode"]["default"], "exact")
+        self.assertEqual(props["top_k"]["default"], 10)
+        self.assertEqual(props["context_lines"]["default"], 0)
         self.assertEqual(props["goal"]["default"], None)
 
         out_props = tool.output_schema["properties"]
@@ -190,7 +215,7 @@ class ServerTest(unittest.TestCase):
         self.assertIn("SearchData", defs)
         self.assertEqual(
             set(defs["SearchData"]["required"]),
-            {"stdout", "stderr", "exit_code"},
+            {"stdout", "stderr", "exit_code", "mode", "index"},
         )
         self.assertIn("ProcessingMetadata", defs)
         self.assertEqual(
@@ -203,10 +228,11 @@ class ServerTest(unittest.TestCase):
         tools = self.run_async(srv.list_tools())
         retrieval = next(t for t in tools if t.name == "codebase_retrieval")
         search = next(t for t in tools if t.name == "codebase_search")
-        self.assertIn("**FIRST CHOICE**", retrieval.description)
-        self.assertIn("**ALWAYS** use `codebase-retrieval`", retrieval.description)
+        self.assertIn("synthesized answer", retrieval.description)
+        self.assertIn("`codebase_search`", retrieval.description)
         self.assertIn("Absolute path", retrieval.description)
-        self.assertIn("Fast regex search", search.description)
+        self.assertIn("mode='exact'", search.description)
+        self.assertIn("mode='semantic'", search.description)
         self.assertIn("-F", search.description)
 
     # ---- 2. Effective-goal behavior -----------------------------------
@@ -262,7 +288,7 @@ class ServerTest(unittest.TestCase):
 
             async def process_search(
                 self,
-                pattern,
+                query,
                 stdout,
                 stderr,
                 exit_code,
@@ -270,14 +296,18 @@ class ServerTest(unittest.TestCase):
                 flags=None,
                 goal=None,
                 repository=None,
+                mode="exact",
+                index=None,
             ):
-                self.calls.append({"pattern": pattern, "goal": goal})
+                self.calls.append({"query": query, "goal": goal})
                 return {
                     "tool": "codebase_search",
                     "data": {
                         "stdout": stdout,
                         "stderr": stderr,
                         "exit_code": exit_code,
+                        "mode": mode,
+                        "index": index,
                     },
                     "processing": {
                         "status": "classified",
@@ -295,13 +325,13 @@ class ServerTest(unittest.TestCase):
         self.run_async(
             srv.call_tool(
                 "codebase_search",
-                {"pattern": "pat", "goal": "explicit search goal"},
+                {"query": "pat", "goal": "explicit search goal"},
             )
         )
         self.assertEqual(rec.calls[-1]["goal"], "explicit search goal")
 
-        # Goal omitted (falls back to pattern)
-        self.run_async(srv.call_tool("codebase_search", {"pattern": "fallback_pat"}))
+        # Goal omitted (falls back to query)
+        self.run_async(srv.call_tool("codebase_search", {"query": "fallback_pat"}))
         self.assertEqual(rec.calls[-1]["goal"], "fallback_pat")
 
     # ---- 3. Success path and replacement envelopes --------------------
@@ -333,7 +363,7 @@ class ServerTest(unittest.TestCase):
         result = self.run_async(
             srv.call_tool(
                 "codebase_search",
-                {"pattern": "hello", "path": ".", "flags": ["-F"]},
+                {"query": "hello", "path": ".", "flags": ["-F"]},
             )
         )
         self.assertFalse(result.is_error)
@@ -350,7 +380,7 @@ class ServerTest(unittest.TestCase):
     def test_search_no_match_is_not_a_tool_error(self):
         srv = make_server(self.repo)
         result = self.run_async(
-            srv.call_tool("codebase_search", {"pattern": "nomatch"})
+            srv.call_tool("codebase_search", {"query": "nomatch"})
         )
         self.assertFalse(result.is_error)
         sc = result.structured_content
@@ -361,24 +391,21 @@ class ServerTest(unittest.TestCase):
     def test_search_exit_two_is_a_tool_error(self):
         srv = make_server(self.repo)
         with self.assertRaisesRegex(ToolError, "regex parse error"):
-            self.run_async(srv.call_tool("codebase_search", {"pattern": "bad["}))
+            self.run_async(srv.call_tool("codebase_search", {"query": "bad["}))
 
-    # ---- 3b. Index refresh before every call ---------------------------
+    # ---- 3b. Retrieval and search never index ---------------------------
 
-    def read_index_log(self, log):
-        return [json.loads(line) for line in log.read_text().splitlines()]
-
-    def test_search_runs_no_index_refresh(self):
+    def test_search_starts_no_indexer(self):
         log = Path(self.tmp.name) / "index.log"
         srv = make_server(self.repo)
         with patch.dict(os.environ, {"FAKE_INDEX_LOG": str(log)}):
             result = self.run_async(
-                srv.call_tool("codebase_search", {"pattern": "hello"})
+                srv.call_tool("codebase_search", {"query": "hello"})
             )
         self.assertFalse(result.is_error)
         self.assertFalse(log.exists())
 
-    def test_retrieval_refreshes_auggie_index_first(self):
+    def test_retrieval_starts_no_indexer(self):
         log = Path(self.tmp.name) / "index.log"
         srv = make_server()
         with patch.dict(os.environ, {"FAKE_INDEX_LOG": str(log)}):
@@ -389,27 +416,7 @@ class ServerTest(unittest.TestCase):
                 )
             )
         self.assertFalse(result.is_error)
-        repo = os.path.realpath(self.repo)
-        self.assertEqual(
-            self.read_index_log(log), [["auggie", ["index", repo], repo]]
-        )
-
-    def test_retrieval_index_refresh_failure_is_tool_error(self):
-        srv = make_server()
-        args = {"repository_path": str(self.repo), "query": "q"}
-        with patch.dict(os.environ, {"FAKE_INDEX_FAIL": "auggie"}):
-            with self.assertRaisesRegex(ToolError, "auggie index boom"):
-                self.run_async(srv.call_tool("codebase_retrieval", args))
-
-    def test_missing_auggie_returns_tool_error(self):
-        srv = server.create_server(
-            executable=str(FAKE_PI),
-            rg_executable=str(FAKE_RG),
-            semantic_executable="/definitely/missing/auggie",
-        )
-        args = {"repository_path": str(self.repo), "query": "q"}
-        with self.assertRaisesRegex(ToolError, "auggie"):
-            self.run_async(srv.call_tool("codebase_retrieval", args))
+        self.assertFalse(log.exists())
 
     # ---- 4. Missing API key fail-open ---------------------------------
 
@@ -433,7 +440,7 @@ class ServerTest(unittest.TestCase):
 
             # Search fails open gracefully
             res_s = self.run_async(
-                srv.call_tool("codebase_search", {"pattern": "hello"})
+                srv.call_tool("codebase_search", {"query": "hello"})
             )
             self.assertFalse(res_s.is_error)
             sc_s = res_s.structured_content
@@ -461,7 +468,7 @@ class ServerTest(unittest.TestCase):
         srv = make_server(self.repo)
         with self.assertRaises(ToolError):
             self.run_async(
-                srv.call_tool("codebase_search", {"pattern": "x", "path": ".."})
+                srv.call_tool("codebase_search", {"query": "x", "path": ".."})
             )
 
     def test_absolute_search_path_outside_root_succeeds(self):
@@ -471,7 +478,7 @@ class ServerTest(unittest.TestCase):
 
         result = self.run_async(
             srv.call_tool(
-                "codebase_search", {"pattern": "x", "path": str(outside)}
+                "codebase_search", {"query": "x", "path": str(outside)}
             )
         )
 
@@ -483,7 +490,7 @@ class ServerTest(unittest.TestCase):
         with self.assertRaises(ToolError):
             self.run_async(
                 srv.call_tool(
-                    "codebase_search", {"pattern": "x", "flags": ["--exclude"]}
+                    "codebase_search", {"query": "x", "flags": ["--exclude"]}
                 )
             )
 
@@ -494,7 +501,7 @@ class ServerTest(unittest.TestCase):
             repository_root=self.repo,
         )
         with self.assertRaises(ToolError):
-            self.run_async(srv.call_tool("codebase_search", {"pattern": "x"}))
+            self.run_async(srv.call_tool("codebase_search", {"query": "x"}))
 
     def test_agent_failure_returns_tool_error(self):
         error = agent_runner.AgentError(
@@ -607,7 +614,7 @@ class ServerTest(unittest.TestCase):
             task = asyncio.create_task(
                 srv.call_tool(
                     "codebase_search",
-                    {"pattern": "hello"},
+                    {"query": "hello"},
                 )
             )
             await started.wait()
@@ -657,12 +664,12 @@ class ServerTest(unittest.TestCase):
                 self.assertEqual(fake_client.closed, 0)
 
                 # Second call: search reuses same client
-                res2 = await srv.call_tool("codebase_search", {"pattern": "hello"})
+                res2 = await srv.call_tool("codebase_search", {"query": "hello"})
                 self.assertFalse(res2.is_error)
                 self.assertEqual(fake_client.closed, 0)
 
                 # Third call: another search reuses same client
-                res3 = await srv.call_tool("codebase_search", {"pattern": "nomatch"})
+                res3 = await srv.call_tool("codebase_search", {"query": "nomatch"})
                 self.assertFalse(res3.is_error)
                 self.assertEqual(fake_client.closed, 0)
                 self.assertEqual(factory_calls, 1)
@@ -693,7 +700,7 @@ class ServerTest(unittest.TestCase):
             clients, factory = self._client_tracker()
             srv = make_server(self.repo, client_factory=factory)
             for pattern in ("hello", "nomatch"):
-                res = await srv.call_tool("codebase_search", {"pattern": pattern})
+                res = await srv.call_tool("codebase_search", {"query": pattern})
                 self.assertFalse(res.is_error)
             res = await srv.call_tool(
                 "codebase_retrieval",
@@ -714,7 +721,7 @@ class ServerTest(unittest.TestCase):
                 AsyncMock(side_effect=RuntimeError("processing failed")),
             ):
                 with self.assertRaises(Exception) as cm:
-                    await srv.call_tool("codebase_search", {"pattern": "hello"})
+                    await srv.call_tool("codebase_search", {"query": "hello"})
             self.assertIn("processing failed", str(cm.exception))
             self.assertEqual([c.closed for c in clients], [1])
 
@@ -735,7 +742,7 @@ class ServerTest(unittest.TestCase):
 
             with patch.object(server.OutputProcessor, "process_search", slow):
                 task = asyncio.create_task(
-                    srv.call_tool("codebase_search", {"pattern": "hello"})
+                    srv.call_tool("codebase_search", {"query": "hello"})
                 )
                 await asyncio.wait_for(entered.wait(), 5)
                 async with srv.settings.lifespan(srv):
@@ -754,7 +761,7 @@ class ServerTest(unittest.TestCase):
             clients, factory = self._client_tracker()
             srv = make_server(self.repo, client_factory=factory)
             async with srv.settings.lifespan(srv):
-                res = await srv.call_tool("codebase_search", {"pattern": "hello"})
+                res = await srv.call_tool("codebase_search", {"query": "hello"})
                 self.assertFalse(res.is_error)
                 res = await srv.call_tool(
                     "codebase_retrieval",
@@ -771,7 +778,7 @@ class ServerTest(unittest.TestCase):
         async def scenario():
             clients, factory = self._client_tracker(closed_raises=True)
             srv = make_server(self.repo, client_factory=factory)
-            res = await srv.call_tool("codebase_search", {"pattern": "hello"})
+            res = await srv.call_tool("codebase_search", {"query": "hello"})
             self.assertFalse(res.is_error)
             self.assertEqual(clients[0].closed, 1)
 
@@ -787,7 +794,7 @@ class ServerTest(unittest.TestCase):
                 AsyncMock(side_effect=RuntimeError("processing failed")),
             ):
                 with self.assertRaises(Exception) as cm:
-                    await srv.call_tool("codebase_search", {"pattern": "hello"})
+                    await srv.call_tool("codebase_search", {"query": "hello"})
             self.assertIn("processing failed", str(cm.exception))
             self.assertNotIn("close failed", str(cm.exception))
             self.assertEqual(clients[0].closed, 1)
@@ -804,7 +811,7 @@ class ServerTest(unittest.TestCase):
                 AsyncMock(side_effect=asyncio.CancelledError()),
             ):
                 with self.assertRaises(asyncio.CancelledError):
-                    await srv.call_tool("codebase_search", {"pattern": "hello"})
+                    await srv.call_tool("codebase_search", {"query": "hello"})
             self.assertEqual(clients[0].closed, 1)
 
         self.run_async(scenario())
@@ -815,7 +822,7 @@ class ServerTest(unittest.TestCase):
             srv = make_server(self.repo, client_factory=lambda: fake_client)
             async with srv.settings.lifespan(srv):
                 with self.assertRaises(ToolError):
-                    await srv.call_tool("codebase_search", {"pattern": "bad["})
+                    await srv.call_tool("codebase_search", {"query": "bad["})
                 self.assertEqual(fake_client.closed, 0)
             self.assertEqual(fake_client.closed, 1)
 
@@ -887,8 +894,6 @@ class ServerTest(unittest.TestCase):
         fake_pi.symlink_to(FAKE_PI)
         fake_rg = Path(fake_bin_dir.name) / "rg"
         fake_rg.symlink_to(FAKE_RG)
-        fake_auggie = Path(fake_bin_dir.name) / "auggie"
-        fake_auggie.symlink_to(FAKE_AUGGIE)
         env["PATH"] = fake_bin_dir.name + os.pathsep + env.get("PATH", "")
         # Ensure fail-open for test determinism without real API key
         env.pop("TYPESAFE_API_KEY", None)
@@ -923,7 +928,7 @@ class ServerTest(unittest.TestCase):
                 }
             )
             self.assertIn("result", resp)
-            self.assertEqual(resp["result"]["serverInfo"]["version"], "0.3.0")
+            self.assertEqual(resp["result"]["serverInfo"]["version"], "0.5.0")
 
             # 2. notifications/initialized
             proc.stdin.write(
@@ -945,9 +950,8 @@ class ServerTest(unittest.TestCase):
                 [
                     "codebase_retrieval",
                     "codebase_search",
-                    "auggie_query",
-                    "auggie_context",
-                    "auggie_status",
+                    "index_status",
+                    "index_update",
                 ],
             )
 
@@ -997,7 +1001,7 @@ class ServerTest(unittest.TestCase):
                     "params": {
                         "name": "codebase_search",
                         "arguments": {
-                            "pattern": "hello",
+                            "query": "hello",
                         },
                     },
                 }
@@ -1050,10 +1054,7 @@ class TelemetryServerTest(unittest.TestCase):
         )
 
     def assert_stage_keys(self, event):
-        stages = ("runner", "processing", "total")
-        if event["tool"] == "codebase_retrieval":
-            stages = ("index_refresh",) + stages
-        for key in stages:
+        for key in ("runner", "processing", "total"):
             self.assertIn(key, event["durations_ms"])
 
     def test_retrieval_ok_emits_one_event(self):
@@ -1144,7 +1145,7 @@ class TelemetryServerTest(unittest.TestCase):
 
     def search(self, srv, pattern, **extra):
         return self.run_async(
-            srv.call_tool("codebase_search", {"pattern": pattern, **extra})
+            srv.call_tool("codebase_search", {"query": pattern, **extra})
         )
 
     def test_search_ok_emits_one_event(self):
@@ -1157,7 +1158,8 @@ class TelemetryServerTest(unittest.TestCase):
         self.assertEqual(
             event["input"],
             {
-                "pattern": "hello",
+                "query": "hello",
+                "mode": "exact",
                 "path": ".",
                 "flags": ["-F"],
                 "goal": None,
@@ -1207,7 +1209,7 @@ class TelemetryServerTest(unittest.TestCase):
                 self.repo, processor_factory=lambda _: BlockingProcessor()
             )
             task = asyncio.create_task(
-                srv.call_tool("codebase_search", {"pattern": "hello"})
+                srv.call_tool("codebase_search", {"query": "hello"})
             )
             await started.wait()
             task.cancel()
