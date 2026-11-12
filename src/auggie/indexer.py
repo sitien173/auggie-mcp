@@ -11,9 +11,10 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import os
+import subprocess
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tqdm import tqdm
@@ -298,6 +299,47 @@ def _parse_gitignore_file(ignore_file: Path) -> list[_GitIgnoreRule]:
     return rules
 
 
+def _git_exclude_rules(root: Path) -> list[_GitIgnoreRule]:
+    """Parse core.excludesFile and .git/info/exclude, lowest precedence first."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--git-path", "info/exclude", "--show-cdup"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if proc.returncode != 0:
+        return []  # Not a Git work tree
+    info_exclude, *cdup = proc.stdout.splitlines()
+    # Derive the work tree root from root, not --show-toplevel, so it stays
+    # comparable with os.walk paths when root goes through a symlink
+    toplevel = Path(os.path.normpath(root / "".join(cdup)))
+
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "config", "--path", "core.excludesFile"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        global_excludes = proc.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError):
+        global_excludes = ""
+    if not global_excludes:
+        xdg = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+        global_excludes = str(Path(xdg) / "git" / "ignore")
+
+    # Patterns in both files are relative to the work tree root
+    rules: list[_GitIgnoreRule] = []
+    for ignore_file in (Path(global_excludes), root / info_exclude):
+        rules.extend(replace(rule, base_dir=toplevel) for rule in _parse_gitignore_file(ignore_file))
+    return rules
+
+
 def _collect_gitignore_rules(
     root: Path,
     current_dir: Path,
@@ -461,10 +503,11 @@ def iter_files(
     # Track real paths to avoid duplicate symlinks
     seen_real_paths: set[Path] = set()
     gitignore_cache: dict[Path, list[_GitIgnoreRule]] = {}
+    exclude_rules = _git_exclude_rules(root)
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         current_dir = Path(dirpath)
-        gitignore_rules = _collect_gitignore_rules(root, current_dir, gitignore_cache)
+        gitignore_rules = exclude_rules + _collect_gitignore_rules(root, current_dir, gitignore_cache)
 
         # Modify dirnames in-place to skip certain directories
         dirnames[:] = [d for d in dirnames if d not in skip_dirs]
