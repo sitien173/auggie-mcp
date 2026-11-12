@@ -127,15 +127,6 @@ def create_server(
 
     @asynccontextmanager
     async def lifespan(app: MCPServer) -> AsyncIterator[LifespanState]:
-        try:
-            async with _lifespan(app) as state:
-                yield state
-        finally:
-            await _close_fallback()
-
-    @asynccontextmanager
-    async def _lifespan(app: MCPServer) -> AsyncIterator[LifespanState]:
-        await _close_fallback()
         cfg = load_config()
         if client_factory is not None:
             client = client_factory()
@@ -197,16 +188,7 @@ def create_server(
         lifespan=lifespan,
     )
 
-    fallback_holder: dict[str, Any] = {"processor": None, "client": None}
-
-    async def _close_fallback() -> None:
-        client = fallback_holder["client"]
-        fallback_holder["processor"] = None
-        fallback_holder["client"] = None
-        if client is not None and hasattr(client, "aclose"):
-            await client.aclose()
-
-    def _get_processor(ctx: Context | None = None) -> OutputProcessor:
+    def _lifespan_processor(ctx: Context | None = None) -> OutputProcessor | None:
         if ctx is not None:
             try:
                 req_ctx = ctx.request_context
@@ -227,24 +209,36 @@ def create_server(
 
         if getattr(server, "_current_lifespan_state", None) is not None:
             return server._current_lifespan_state.processor
+        return None
 
-        if fallback_holder["processor"] is None:
-            cfg = load_config()
-            if client_factory is not None:
-                cl = client_factory()
-            elif cfg.api_key:
-                cl = create_typesafe_client(cfg)
-            else:
-                cl = None
-            fallback_holder["client"] = cl
+    @asynccontextmanager
+    async def _processor_scope(
+        ctx: Context | None = None,
+    ) -> AsyncIterator[OutputProcessor]:
+        """Yield the lifespan processor, or a per-call one whose client is closed on exit."""
+        shared = _lifespan_processor(ctx)
+        if shared is not None:
+            yield shared
+            return
 
+        cfg = load_config()
+        if client_factory is not None:
+            cl = client_factory()
+        elif cfg.api_key:
+            cl = create_typesafe_client(cfg)
+        else:
+            cl = None
+        try:
             if processor_factory is not None:
-                fallback_holder["processor"] = processor_factory(cl)
+                yield processor_factory(cl)
             else:
-                fallback_holder["processor"] = OutputProcessor(
-                    client=cl, config=cfg
-                )
-        return fallback_holder["processor"]
+                yield OutputProcessor(client=cl, config=cfg)
+        finally:
+            if cl is not None and hasattr(cl, "aclose"):
+                try:
+                    await cl.aclose()
+                except Exception:
+                    pass
 
     @server.tool(
         name="codebase_retrieval",
@@ -304,14 +298,14 @@ def create_server(
             except Exception as exc:  # timeout, unexpected
                 raise ToolError(str(exc) or exc.__class__.__name__) from exc
 
-            processor = _get_processor(ctx)
             effective_goal = goal if goal is not None else query
-            with record.stage("processing"):
-                envelope = await processor.process_retrieval(
-                    query=query,
-                    result=runner_result,
-                    goal=effective_goal,
-                )
+            async with _processor_scope(ctx) as processor:
+                with record.stage("processing"):
+                    envelope = await processor.process_retrieval(
+                        query=query,
+                        result=runner_result,
+                        goal=effective_goal,
+                    )
             try:
                 record.set_processing(
                     envelope["processing"], envelope["data"]["result"]
@@ -382,19 +376,19 @@ def create_server(
                 )
                 raise ToolError(message)
 
-            processor = _get_processor(ctx)
             effective_goal = goal if goal is not None else pattern
-            with record.stage("processing"):
-                envelope = await processor.process_search(
-                    pattern=pattern,
-                    stdout=result["stdout"],
-                    stderr=result["stderr"],
-                    exit_code=result["exit_code"],
-                    path=path,
-                    flags=flags,
-                    goal=effective_goal,
-                    repository=search_root,
-                )
+            async with _processor_scope(ctx) as processor:
+                with record.stage("processing"):
+                    envelope = await processor.process_search(
+                        pattern=pattern,
+                        stdout=result["stdout"],
+                        stderr=result["stderr"],
+                        exit_code=result["exit_code"],
+                        path=path,
+                        flags=flags,
+                        goal=effective_goal,
+                        repository=search_root,
+                    )
             try:
                 record.set_processing(
                     envelope["processing"], envelope["data"]["stdout"]

@@ -670,33 +670,140 @@ class ServerTest(unittest.TestCase):
 
         self.run_async(scenario())
 
-    def test_fallback_client_closed_once_across_later_lifespan(self):
+    def _client_tracker(self, closed_raises=False):
+        clients = []
+
+        def factory():
+            c = FakeClientWithCounters()
+            if closed_raises:
+                async def boom():
+                    c.closed += 1
+                    raise RuntimeError("close failed")
+
+                c.aclose = boom
+            clients.append(c)
+            return c
+
+        return clients, factory
+
+    def test_direct_call_client_closed_once_per_call(self):
         async def scenario():
-            clients = []
+            clients, factory = self._client_tracker()
+            srv = make_server(self.repo, client_factory=factory)
+            for pattern in ("hello", "nomatch"):
+                res = await srv.call_tool("codebase_search", {"pattern": pattern})
+                self.assertFalse(res.is_error)
+            res = await srv.call_tool(
+                "codebase_retrieval",
+                {"repository_path": str(self.repo), "query": "q"},
+            )
+            self.assertFalse(res.is_error)
+            self.assertEqual([c.closed for c in clients], [1, 1, 1])
 
-            def client_factory():
-                c = FakeClientWithCounters()
-                clients.append(c)
-                return c
+        self.run_async(scenario())
 
-            srv = make_server(self.repo, client_factory=client_factory)
+    def test_direct_call_client_closed_once_when_processing_raises(self):
+        async def scenario():
+            clients, factory = self._client_tracker()
+            srv = make_server(self.repo, client_factory=factory)
+            with patch.object(
+                server.OutputProcessor,
+                "process_search",
+                AsyncMock(side_effect=RuntimeError("processing failed")),
+            ):
+                with self.assertRaises(Exception) as cm:
+                    await srv.call_tool("codebase_search", {"pattern": "hello"})
+            self.assertIn("processing failed", str(cm.exception))
+            self.assertEqual([c.closed for c in clients], [1])
 
-            res0 = await srv.call_tool("codebase_search", {"pattern": "hello"})
-            self.assertFalse(res0.is_error)
-            self.assertEqual(len(clients), 1)
+        self.run_async(scenario())
 
-            async with srv.settings.lifespan(srv):
-                for pattern in ("hello", "nomatch"):
-                    res = await srv.call_tool("codebase_search", {"pattern": pattern})
+    def test_in_flight_direct_call_survives_lifespan_start(self):
+        async def scenario():
+            clients, factory = self._client_tracker()
+            srv = make_server(self.repo, client_factory=factory)
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            original = server.OutputProcessor.process_search
+
+            async def slow(self_, *args, **kwargs):
+                entered.set()
+                await release.wait()
+                return await original(self_, *args, **kwargs)
+
+            with patch.object(server.OutputProcessor, "process_search", slow):
+                task = asyncio.create_task(
+                    srv.call_tool("codebase_search", {"pattern": "hello"})
+                )
+                await asyncio.wait_for(entered.wait(), 5)
+                async with srv.settings.lifespan(srv):
+                    self.assertEqual(len(clients), 2)
+                    release.set()
+                    res = await task
                     self.assertFalse(res.is_error)
+                    self.assertEqual(clients[0].closed, 1)
+                    self.assertEqual(clients[1].closed, 0)
+            self.assertEqual([c.closed for c in clients], [1, 1])
+
+        self.run_async(scenario())
+
+    def test_lifespan_client_shared_and_not_closed_per_call(self):
+        async def scenario():
+            clients, factory = self._client_tracker()
+            srv = make_server(self.repo, client_factory=factory)
+            async with srv.settings.lifespan(srv):
+                res = await srv.call_tool("codebase_search", {"pattern": "hello"})
+                self.assertFalse(res.is_error)
                 res = await srv.call_tool(
                     "codebase_retrieval",
                     {"repository_path": str(self.repo), "query": "q"},
                 )
                 self.assertFalse(res.is_error)
-                self.assertEqual(len(clients), 2)
+                self.assertEqual(len(clients), 1)
+                self.assertEqual(clients[0].closed, 0)
+            self.assertEqual(clients[0].closed, 1)
 
-            self.assertEqual([c.closed for c in clients], [1, 1])
+        self.run_async(scenario())
+
+    def test_aclose_failure_does_not_mask_result(self):
+        async def scenario():
+            clients, factory = self._client_tracker(closed_raises=True)
+            srv = make_server(self.repo, client_factory=factory)
+            res = await srv.call_tool("codebase_search", {"pattern": "hello"})
+            self.assertFalse(res.is_error)
+            self.assertEqual(clients[0].closed, 1)
+
+        self.run_async(scenario())
+
+    def test_aclose_failure_does_not_mask_call_error(self):
+        async def scenario():
+            clients, factory = self._client_tracker(closed_raises=True)
+            srv = make_server(self.repo, client_factory=factory)
+            with patch.object(
+                server.OutputProcessor,
+                "process_search",
+                AsyncMock(side_effect=RuntimeError("processing failed")),
+            ):
+                with self.assertRaises(Exception) as cm:
+                    await srv.call_tool("codebase_search", {"pattern": "hello"})
+            self.assertIn("processing failed", str(cm.exception))
+            self.assertNotIn("close failed", str(cm.exception))
+            self.assertEqual(clients[0].closed, 1)
+
+        self.run_async(scenario())
+
+    def test_cancellation_propagates_when_aclose_fails(self):
+        async def scenario():
+            clients, factory = self._client_tracker(closed_raises=True)
+            srv = make_server(self.repo, client_factory=factory)
+            with patch.object(
+                server.OutputProcessor,
+                "process_search",
+                AsyncMock(side_effect=asyncio.CancelledError()),
+            ):
+                with self.assertRaises(asyncio.CancelledError):
+                    await srv.call_tool("codebase_search", {"pattern": "hello"})
+            self.assertEqual(clients[0].closed, 1)
 
         self.run_async(scenario())
 
