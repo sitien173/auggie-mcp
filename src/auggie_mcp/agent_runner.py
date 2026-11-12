@@ -22,6 +22,9 @@ TIMEOUT_SECONDS = 1800.0
 
 DEFAULT_DRIVER = "pi"
 
+# Set in the agent's environment so a retrieval started inside it is refused.
+NESTED_ENV = "AUGGIE_RETRIEVAL_ACTIVE"
+
 # Defaults applied only when the resolved driver is ``pi``.
 _PI_DEFAULTS = {
     "model": "gpt-6-luna",
@@ -129,6 +132,8 @@ async def run_agent(repository, query, *, config=None, executable=None) -> str:
     ``executable`` overrides the configured executable. Cancellation kills the
     agent's process tree before ``CancelledError`` propagates.
     """
+    if os.environ.get(NESTED_ENV):
+        raise ValueError("nested codebase_retrieval refused: already inside a retrieval agent")
     repo = validate_repository(repository)
     config = config or load_config()
     try:
@@ -142,6 +147,7 @@ async def run_agent(repository, query, *, config=None, executable=None) -> str:
                 args=config.args,
                 timeout_s=config.timeout_s,
                 executable=executable or config.executable,
+                env={NESTED_ENV: "1"},
             )
         )
     except KeyError as exc:

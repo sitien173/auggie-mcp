@@ -5,8 +5,9 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from coding_agent_cli import Outcome
+from coding_agent_cli import Outcome, Result
 
 from auggie_mcp import agent_runner
 
@@ -108,6 +109,26 @@ class RunAgentTest(unittest.TestCase):
         config = agent_runner.AgentConfig(driver="nope")
         with self.assertRaises(ValueError):
             self.run_agent(config=config)
+
+    def test_nested_call_is_refused_before_spawn(self):
+        with (
+            patch.dict(os.environ, {agent_runner.NESTED_ENV: "1"}),
+            patch.object(agent_runner, "run") as run,
+        ):
+            with self.assertRaisesRegex(ValueError, "nested"):
+                self.run_agent(executable=str(FAKE_PI))
+        run.assert_not_called()
+
+    def test_child_env_carries_nested_marker(self):
+        requests = []
+
+        async def fake_run(request):
+            requests.append(request)
+            return Result(outcome=Outcome.SUCCESS, text="ok")
+
+        with patch.object(agent_runner, "run", fake_run):
+            self.assertEqual(self.run_agent(), "ok")
+        self.assertEqual(requests[0].env[agent_runner.NESTED_ENV], "1")
 
     def test_missing_repository_raises_value_error(self):
         with self.assertRaises(ValueError):
