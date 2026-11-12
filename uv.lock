@@ -217,6 +217,7 @@ name = "auggie-mcp"
 version = "0.4.0"
 source = { editable = "." }
 dependencies = [
+    { name = "coding-agent-cli" },
     { name = "lancedb" },
     { name = "mcp" },
     { name = "numpy" },
@@ -236,6 +237,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "coding-agent-cli", specifier = "==0.1.0" },
     { name = "lancedb", specifier = "==0.33.0" },
     { name = "mcp", specifier = ">=2,<3" },
     { name = "numpy", specifier = "==2.5.0" },
@@ -488,6 +490,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/76/d4/81420972a676e8ffea40450d8c8c92943e7218a78fe9b64359836cc9876b/click-8.4.2.tar.gz", hash = "sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6", size = 338000, upload-time = "2026-06-24T17:45:15.148Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/e2/79c688af8b210d232694e31e59da9f6ec747bae31c3f5946e4e9b98860d5/click-8.4.2-py3-none-any.whl", hash = "sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76", size = 119243, upload-time = "2026-06-24T17:45:13.73Z" },
+]
+
+[[package]]
+name = "coding-agent-cli"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/af/c4/5229604841dc5adc23eb738c31dcfe0343b5ac8d8852e5f56cce683f614e/coding_agent_cli-0.1.0.tar.gz", hash = "sha256:d4a10e5d134a75923c112b506d6b47088b8729ece7081791a896748257634ca9", size = 158337, upload-time = "2026-11-12T15:31:59.485Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/23/0d/73cbe5e5b4d2116eec6f99316266495efd800b17d8e5924edc32f87d312b/coding_agent_cli-0.1.0-py3-none-any.whl", hash = "sha256:10b9f1648a3ee47b690682eb9ec30673d51f144f34108cb81d28c730cab0a315", size = 44352, upload-time = "2026-11-12T15:31:58.238Z" },
 ]
 
 [[package]]

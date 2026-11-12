@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 from mcp.server.mcpserver.exceptions import ToolError
 from typesafe_sdk import ChoiceAnswer
 
-from auggie_mcp import pi_runner, server
+from auggie_mcp import agent_runner, server
 from auggie_mcp.output_processing import (
     RetrievalEnvelope,
     SearchEnvelope,
@@ -496,11 +496,13 @@ class ServerTest(unittest.TestCase):
         with self.assertRaises(ToolError):
             self.run_async(srv.call_tool("codebase_search", {"pattern": "x"}))
 
-    def test_pi_failure_returns_tool_error(self):
-        error = pi_runner.PiExecutionError(
-            "Pi exited with status 3", returncode=3, stderr="fake pi failure"
+    def test_agent_failure_returns_tool_error(self):
+        error = agent_runner.AgentError(
+            "pi run ended with outcome retryable: fake pi failure",
+            returncode=3,
+            detail="fake pi failure",
         )
-        with patch.object(pi_runner, "run_pi", AsyncMock(side_effect=error)):
+        with patch.object(agent_runner, "run_agent", AsyncMock(side_effect=error)):
             srv = make_server()
             with self.assertRaises(ToolError) as cm:
                 self.run_async(
@@ -511,22 +513,9 @@ class ServerTest(unittest.TestCase):
                 )
             self.assertIn("fake pi failure", str(cm.exception))
 
-    def test_parse_failure_returns_tool_error(self):
-        error = pi_runner.PiParseError("Pi produced no final assistant response")
-        with patch.object(pi_runner, "run_pi", AsyncMock(side_effect=error)):
-            srv = make_server()
-            with self.assertRaises(ToolError) as cm:
-                self.run_async(
-                    srv.call_tool(
-                        "codebase_retrieval",
-                        {"repository_path": str(self.repo), "query": "q"},
-                    )
-                )
-        self.assertIn("no final assistant response", str(cm.exception))
-
     def test_timeout_returns_tool_error(self):
         with patch.object(
-            pi_runner, "run_pi", AsyncMock(side_effect=asyncio.TimeoutError())
+            agent_runner, "run_agent", AsyncMock(side_effect=asyncio.TimeoutError())
         ):
             srv = make_server()
             with self.assertRaises(ToolError) as cm:
@@ -553,7 +542,7 @@ class ServerTest(unittest.TestCase):
                     cancelled.set()
                     raise
 
-            with patch.object(pi_runner, "run_pi", side_effect=wait_forever):
+            with patch.object(agent_runner, "run_agent", side_effect=wait_forever):
                 srv = make_server()
                 task = asyncio.create_task(
                     srv.call_tool(
@@ -887,7 +876,7 @@ class ServerTest(unittest.TestCase):
         self.assertFalse(hasattr(s, "run_sse"))
         self.assertFalse(hasattr(s, "run_http"))
 
-    # ---- 9. Contract test with fake Pi over stdio ---------------------
+    # ---- 9. Contract test with fake agent CLI over stdio ---------------------
 
     def test_contract_stdio_discovery_and_call(self):
         """Start the real server over stdio and speak minimal JSON-RPC."""
@@ -1094,10 +1083,12 @@ class TelemetryServerTest(unittest.TestCase):
         self.assertEqual(proc["output_bytes"], len(sc["data"]["result"].encode()))
 
     def test_retrieval_error_records_tool_error_and_runner(self):
-        error = pi_runner.PiExecutionError(
-            "Pi exited with status 3", returncode=3, stderr="fake pi failure"
+        error = agent_runner.AgentError(
+            "pi run ended with outcome retryable: fake pi failure",
+            returncode=3,
+            detail="fake pi failure",
         )
-        with patch.object(pi_runner, "run_pi", AsyncMock(side_effect=error)):
+        with patch.object(agent_runner, "run_agent", AsyncMock(side_effect=error)):
             with self.assertRaises(ToolError) as cm:
                 self.retrieve(make_server())
         (event,) = self.events()
@@ -1117,7 +1108,7 @@ class TelemetryServerTest(unittest.TestCase):
 
     def test_retrieval_other_error_leaves_runner_null(self):
         with patch.object(
-            pi_runner, "run_pi", AsyncMock(side_effect=asyncio.TimeoutError())
+            agent_runner, "run_agent", AsyncMock(side_effect=asyncio.TimeoutError())
         ):
             with self.assertRaises(ToolError):
                 self.retrieve(make_server())
@@ -1133,7 +1124,7 @@ class TelemetryServerTest(unittest.TestCase):
                 started.set()
                 await asyncio.Event().wait()
 
-            with patch.object(pi_runner, "run_pi", side_effect=wait_forever):
+            with patch.object(agent_runner, "run_agent", side_effect=wait_forever):
                 task = asyncio.create_task(
                     make_server().call_tool(
                         "codebase_retrieval",

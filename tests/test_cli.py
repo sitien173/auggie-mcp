@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from auggie_mcp import cli, pi_runner, rg_runner
+from auggie_mcp import agent_runner, cli, rg_runner
 
 TESTS_DIR = Path(__file__).resolve().parent
 FAKE_PI = TESTS_DIR / "fake_pi.py"
@@ -134,7 +134,7 @@ class CliMainTest(unittest.TestCase):
 
     def fake_executables(self):
         return {
-            "pi_executable": str(FAKE_PI),
+            "agent_executable": str(FAKE_PI),
             "rg_executable": str(FAKE_RG),
         }
 
@@ -161,7 +161,7 @@ class CliMainTest(unittest.TestCase):
 
     def test_retrieve_invokes_existing_runner(self):
         with patch.object(
-            cli.pi_runner, "run_pi", AsyncMock(return_value="answer text")
+            cli.agent_runner, "run_agent", AsyncMock(return_value="answer text")
         ) as runner:
             code, out, _ = self.invoke(
                 ["retrieve", str(self.repo), "query text"]
@@ -171,14 +171,15 @@ class CliMainTest(unittest.TestCase):
         call = runner.await_args
         self.assertEqual(call.args[0], str(self.repo))
         self.assertEqual(call.args[1], "query text")
-        # the packaged system prompt is loaded and passed to the runner
-        self.assertIn("Retrieval Assistant", call.args[2])
+        self.assertEqual(len(call.args), 2)
 
     def test_retrieve_runner_failure_emits_json_error_on_stderr(self):
-        error = pi_runner.PiExecutionError(
-            "Pi exited with status 3", returncode=3, stderr="fake pi failure"
+        error = agent_runner.AgentError(
+            "pi run ended with outcome retryable: fake pi failure",
+            returncode=3,
+            detail="fake pi failure",
         )
-        with patch.object(cli.pi_runner, "run_pi", AsyncMock(side_effect=error)):
+        with patch.object(cli.agent_runner, "run_agent", AsyncMock(side_effect=error)):
             code, out, err = self.invoke(
                 ["retrieve", str(self.repo), "query"]
             )
@@ -336,7 +337,7 @@ class CliMainTest(unittest.TestCase):
             os.chdir(self.repo)
             code, out, err = self.invoke(
                 ["search", "hello"],
-                pi_executable=str(FAKE_PI),
+                agent_executable=str(FAKE_PI),
                 rg_executable="/definitely/missing/rg",
             )
         finally:
@@ -390,7 +391,7 @@ class CliTelemetryTest(unittest.TestCase):
             ), contextlib.redirect_stderr(err):
                 code = cli.main(
                     argv,
-                    pi_executable=str(FAKE_PI),
+                    agent_executable=str(FAKE_PI),
                     rg_executable=str(FAKE_RG),
                     **kwargs,
                 )
@@ -447,16 +448,16 @@ class CliTelemetryTest(unittest.TestCase):
         self.invoke(["retrieve", str(self.repo), "what?"], enabled=False)
         self.assertEqual(self.events(), [])
 
-    def test_retrieve_pi_failure_records_error_and_runner_bytes(self):
-        error = pi_runner.PiExecutionError(
-            "Pi exited with status 3", returncode=3, stderr="bad\u00e9"
+    def test_retrieve_agent_failure_records_error_and_runner_bytes(self):
+        error = agent_runner.AgentError(
+            "pi run ended with outcome retryable", returncode=3, detail="bad\u00e9"
         )
-        with patch.object(cli.pi_runner, "run_pi", AsyncMock(side_effect=error)):
+        with patch.object(cli.agent_runner, "run_agent", AsyncMock(side_effect=error)):
             code, out, err = self.invoke(["retrieve", str(self.repo), "q"])
         self.assertEqual(code, 2)
         (event,) = self.events()
         self.assertEqual(event["outcome"], "error")
-        self.assertEqual(event["error"]["type"], "PiExecutionError")
+        self.assertEqual(event["error"]["type"], "AgentError")
         self.assertEqual(
             event["runner"],
             {"exit_code": 3, "stdout_bytes": 0, "stderr_bytes": len("bad\u00e9".encode())},
@@ -477,7 +478,7 @@ class CliTelemetryTest(unittest.TestCase):
         import asyncio
 
         with patch.object(
-            cli.pi_runner, "run_pi", AsyncMock(side_effect=asyncio.CancelledError())
+            cli.agent_runner, "run_agent", AsyncMock(side_effect=asyncio.CancelledError())
         ):
             with patch.dict(
                 os.environ,
@@ -489,7 +490,7 @@ class CliTelemetryTest(unittest.TestCase):
                             ["retrieve", str(self.repo), "q"]
                         )[0],
                         [],
-                        pi_executable="pi",
+                        agent_executable="pi",
                     )
         (event,) = self.events()
         self.assertEqual(event["outcome"], "cancelled")

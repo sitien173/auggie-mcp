@@ -31,7 +31,7 @@ Use retrieval for conceptual questions when relevant files or symbols are unknow
 auggie retrieve "/absolute/path/to/repository" "Where is authentication implemented? Return verified file paths and line numbers."
 ```
 
-Ask one focused question with enough task context to identify the relevant implementation. The runner starts a noninteractive Pi process in the selected repository. It does not use the MCP server's output-processing pipeline.
+Ask one focused question with enough task context to identify the relevant implementation. The runner starts the configured agent CLI noninteractively in the selected repository. It does not use the MCP server's output-processing pipeline.
 
 Wait for retrieval to finish. Do not duplicate the same investigation with another retrieval call or parallel manual exploration.
 
@@ -47,7 +47,7 @@ auggie search "validate_flags" -F -C 3
 auggie search '^class .*Error' -g '*.py'
 
 # Names of files containing a literal.
-auggie search "run_pi" -F -l
+auggie search "run_agent" -F -l
 
 # File discovery still requires the positional pattern argument.
 auggie search "" --files -g '*.py'

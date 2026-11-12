@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "auggie-mcp"
 version = "0.4.0"
-description = "Python MCP server exposing codebase retrieval through an ephemeral Pi subprocess"
+description = "Python MCP server exposing codebase retrieval through a coding-agent CLI"
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=2,<3",
@@ -17,6 +17,7 @@ dependencies = [
     "tree-sitter==0.25.2",
     "voyageai==0.4.1",
     "watchdog==6.0.0",
+    "coding-agent-cli==0.1.0",
 ]
 
 [project.scripts]
@@ -25,7 +26,6 @@ auggie = "auggie_mcp.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/auggie_mcp", "src/auggie"]
-include = ["system_prompt.md"]
 
 [dependency-groups]
 dev = [

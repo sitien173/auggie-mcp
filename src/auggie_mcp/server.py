@@ -11,7 +11,7 @@ from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from auggie.mcp_tools import register_tools
-from auggie_mcp import pi_runner, rg_runner, telemetry
+from auggie_mcp import agent_runner, rg_runner, telemetry
 from auggie_mcp.index_refresh import refresh_index
 from auggie_mcp.output_processing import (
     OutputProcessor,
@@ -21,8 +21,6 @@ from auggie_mcp.output_processing import (
     load_config,
     reset_archive_executor,
 )
-
-_SYSTEM_PROMPT = pi_runner.load_system_prompt()
 
 _TOOL_DESCRIPTION = """
 
@@ -116,7 +114,7 @@ class LifespanState:
 
 def create_server(
     *,
-    executable: str = "pi",
+    executable: str | None = None,
     rg_executable: str = "rg",
     semantic_executable: str = "auggie",
     repository_root=None,
@@ -251,7 +249,7 @@ def create_server(
         goal: str | None = None,
         ctx: Context = None,
     ) -> RetrievalEnvelope:
-        """Run Pi in ``repository_path`` with ``query`` and return the classified answer envelope."""
+        """Run the agent CLI in ``repository_path`` with ``query`` and return the classified answer envelope."""
         record = telemetry.CallRecord(
             "mcp",
             "codebase_retrieval",
@@ -266,17 +264,16 @@ def create_server(
                     await refresh_index(semantic_executable, repository_path)
                 with record.stage("runner"):
                     try:
-                        runner_result = await pi_runner.run_pi(
+                        runner_result = await agent_runner.run_agent(
                             repository_path,
                             query,
-                            _SYSTEM_PROMPT,
                             executable=executable,
                         )
-                    except pi_runner.PiExecutionError as exc:
+                    except agent_runner.AgentError as exc:
                         record.set_runner(
                             exit_code=exc.returncode,
                             stdout_bytes=0,
-                            stderr_bytes=_utf8_len(exc.stderr),
+                            stderr_bytes=_utf8_len(exc.detail),
                         )
                         raise
                 record.set_runner(
@@ -288,11 +285,8 @@ def create_server(
                 raise
             except (ValueError, FileNotFoundError) as exc:
                 raise ToolError(str(exc)) from exc
-            except pi_runner.PiRunnerError as exc:
-                message = str(exc)
-                if isinstance(exc, pi_runner.PiExecutionError) and exc.stderr:
-                    message = f"{message}: {exc.stderr}"
-                raise ToolError(message) from exc
+            except agent_runner.AgentError as exc:
+                raise ToolError(str(exc)) from exc
             except Exception as exc:  # timeout, unexpected
                 raise ToolError(str(exc) or exc.__class__.__name__) from exc
 

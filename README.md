@@ -21,7 +21,7 @@ The `auggie-mcp` console command and `python -m auggie_mcp` both start the stdio
 The `auggie` command reuses the underlying runners without MCP server lifecycle or Jev output processing. Output is JSON by default; pass `--human` for text. Standalone CLI output remains identical to previous versions.
 
 ```bash
-# Semantic retrieval (uses the Pi retrieval runner)
+# Semantic retrieval (uses the configured agent CLI)
 uv run auggie retrieve <repository> <query>
 
 # Exact search in the current directory (uses the rg runner)
@@ -106,13 +106,34 @@ or with the module entry point:
 - `AUGGIE_VOYAGE_CHARS_PER_TOKEN`: Characters-per-token ratio used to estimate tokens when batching Voyage requests.
 - `AUGGIE_WATCH_DEBOUNCE_MS`: Debounce delay for `auggie watch`.
 
+### Agent CLI configuration
+
+`codebase_retrieval` and `auggie retrieve` run an agent CLI through the [`coding-agent-cli`](https://pypi.org/project/coding-agent-cli/) package. Built-in drivers are `pi`, `claude`, `codex`, and `agy`. Each setting resolves from the `AUGGIE_AGENT_*` environment variable, then the `[agent]` table in `~/.auggie/config.toml`, then the default.
+
+| Key | Environment variable | Default |
+|---|---|---|
+| `driver` | `AUGGIE_AGENT_DRIVER` | `pi` |
+| `model` | `AUGGIE_AGENT_MODEL` | `gpt-6-luna` for `pi`, unset otherwise |
+| `reasoning` | `AUGGIE_AGENT_REASONING` | `high` for `pi`, unset otherwise |
+| `args` | `AUGGIE_AGENT_ARGS`, split with shell quoting rules | `--approve --no-session --no-extensions --no-skills --no-prompt-templates` for `pi`, empty otherwise |
+| `executable` | `AUGGIE_AGENT_EXECUTABLE` | the driver's CLI on `PATH` |
+| `timeout_s` | `AUGGIE_AGENT_TIMEOUT_S` | `1800` |
+
+```toml
+[agent]
+driver = "claude"
+args = ["--permission-mode", "bypassPermissions"]
+```
+
+The query is sent to the agent unchanged. No system prompt is added. The library adds no permission or approval flags. Pass them through `args` when the agent needs unattended tool use.
+
 ## Tools
 
 The server exposes `codebase_retrieval` and `codebase_search`, both returning structured replacement envelopes. It also registers three semantic index tools, described under [Semantic index tools](#semantic-index-tools).
 
 ### `codebase_retrieval(repository_path, query, goal=None)`
 
-Runs an ephemeral, noninteractive Pi subprocess in `repository_path` and processes the answer through Jev.
+Runs the configured agent CLI noninteractively in `repository_path` and processes the answer through Jev.
 
 - `repository_path` (`string`, required): Any accessible directory path.
 - `query` (`string`, required): Natural-language codebase query.
@@ -181,7 +202,7 @@ Each repository keeps its index in a `.auggie/` directory at the repository root
 - **Uncertainty Floor:** Only non-protected chunks scored with retention probability <= `0.1` may be omitted. Omitted contiguous blocks render as deterministic omission markers.
 - **Fail-Open Semantics:** Any API failure, invalid response, timeout, or missing API key fails open. The server returns exact original runner output marked `status: "unclassified"` and `retention: "failed_open"`. Jev errors never become MCP tool errors.
 - **Exit Codes:** Search exit code `1` (no matches found) remains a normal successful MCP call, not a tool error. Operational runner errors (missing executables, path escapes, invalid flags, process crashes) remain MCP tool errors.
-- **Index Refresh:** `codebase_retrieval` runs `auggie index` on `repository_path` before starting Pi, so semantic results reflect current files on disk. Unchanged files are skipped. A failed or missing indexer is an MCP tool error. `codebase_search` needs no index because ripgrep scans files directly.
+- **Index Refresh:** `codebase_retrieval` runs `auggie index` on `repository_path` before starting the agent CLI, so semantic results reflect current files on disk. Unchanged files are skipped. A failed or missing indexer is an MCP tool error. `codebase_search` needs no index because ripgrep scans files directly.
 - **Lifespan Management:** A single `AsyncTypeSafeClient` is created on server lifespan startup and shared across concurrent calls with SDK retries disabled. It closes cleanly on server shutdown alongside the bounded archive executor.
 
 ## Privacy
@@ -193,10 +214,10 @@ Each repository keeps its index in a `.auggie/` directory at the repository root
 
 ## Accepted risks
 
-- **Writable tools.** Pi is started with no tool allowlist. Built-in tools, including `bash`, `edit`, and `write`, remain available. The bundled read-only system prompt is a behavioral control only, not a security boundary. A malicious repository or query could cause Pi to modify files or run commands.
+- **Writable tools.** The agent CLI is started with no tool allowlist and no system prompt. Its built-in tools, such as shell and file editing, remain available within the CLI's own permission rules and any `args` you configure. A malicious repository or query could cause the agent to modify files or run commands.
 - **Unlimited concurrency.** Requests start immediately; there is no concurrency limit or queue. Concurrent calls may exhaust CPU, memory, or model API quota, and concurrent requests may modify the same repository.
-- **Model credentials.** Pi uses the caller's configured provider credentials.
-- **`auggie` command name collision.** The Augment `auggie` CLI uses the same command name as this package. If it precedes this package on `PATH`, `auggie index` from the server and `auggie query` or `auggie chunk` from the Pi subprocess resolve to the wrong binary.
+- **Model credentials.** The agent CLI uses the caller's configured provider credentials.
+- **`auggie` command name collision.** The Augment `auggie` CLI uses the same command name as this package. If it precedes this package on `PATH`, `auggie index` from the server and `auggie query` or `auggie chunk` from the agent subprocess resolve to the wrong binary.
 - **Previous indexes.** Indexes built by the previous external tool are not read. Run `auggie index` for each repository.
 
 ## Telemetry
@@ -247,11 +268,4 @@ uv run python -m unittest tests.test_output_processing -v
 uv run python -m unittest tests.test_cli -v
 uv run python -m unittest discover -s tests -v
 uv run pytest tests/semantic -q
-```
-
-Live tests exercising external APIs are strictly opt-in and require appropriate credentials:
-
-```bash
-# Optional live Pi test
-AUGGIE_LIVE_PI=1 uv run python -m unittest tests.test_live_pi -v
 ```

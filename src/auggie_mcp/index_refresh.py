@@ -2,7 +2,7 @@
 
 import asyncio
 
-from auggie_mcp import pi_runner, rg_runner
+from auggie_mcp import agent_runner, rg_runner
 
 # Upper bound (characters) on stderr kept in a refresh failure message.
 _STDERR_TAIL = 2000
@@ -18,7 +18,7 @@ async def refresh_index(executable, root) -> None:
     The auggie semantic index updates incrementally, so unchanged files are skipped.
     Cancellation terminates the whole process group.
     """
-    repo = pi_runner.validate_repository(root)
+    repo = agent_runner.validate_repository(root)
     try:
         process = await asyncio.create_subprocess_exec(
             executable,

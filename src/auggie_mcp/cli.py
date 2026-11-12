@@ -1,6 +1,6 @@
 """Command-line interface for the existing retrieval and search runners.
 
-Exposes ``auggie retrieve`` and ``auggie search`` by calling ``pi_runner`` and
+Exposes ``auggie retrieve`` and ``auggie search`` by calling ``agent_runner`` and
 ``rg_runner`` directly. Output is JSON by default and text with ``--human``.
 Also registers the semantic index subcommands from ``auggie.cli`` (index, query,
 chunk, reset, reindex, clean, cache-report, delete, log, status, health, tune,
@@ -17,7 +17,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from auggie import cli as semantic_cli
-from auggie_mcp import pi_runner, rg_runner, telemetry
+from auggie_mcp import agent_runner, rg_runner, telemetry
 
 
 def _utc_now() -> datetime:
@@ -60,8 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     retrieve = subparsers.add_parser(
         "retrieve",
-        help="Semantically retrieve code with the Pi retrieval runner.",
-        description="Run the Pi retrieval runner and print its response.",
+        help="Semantically retrieve code with the configured agent CLI.",
+        description="Run the configured agent CLI and print its response.",
     )
     retrieve.add_argument("repository", help="Repository directory to search.")
     retrieve.add_argument("query", help="Natural-language retrieval query.")
@@ -127,7 +127,7 @@ def _emit_error(message: str) -> None:
     sys.stderr.write("\n")
 
 
-def _run_retrieve(args, extra, *, pi_executable):
+def _run_retrieve(args, extra, *, agent_executable):
     record = telemetry.CallRecord(
         "cli",
         "codebase_retrieval",
@@ -140,22 +140,20 @@ def _run_retrieve(args, extra, *, pi_executable):
             raise CliUsageError(
                 "unrecognized arguments: " + " ".join(extra)
             )
-        system_prompt = pi_runner.load_system_prompt()
         try:
             with record.stage("runner"):
                 response = asyncio.run(
-                    pi_runner.run_pi(
+                    agent_runner.run_agent(
                         args.repository,
                         args.query,
-                        system_prompt,
-                        executable=pi_executable,
+                        executable=agent_executable,
                     )
                 )
-        except pi_runner.PiExecutionError as exc:
+        except agent_runner.AgentError as exc:
             record.set_runner(
                 exit_code=exc.returncode,
                 stdout_bytes=0,
-                stderr_bytes=len((exc.stderr or "").encode("utf-8")),
+                stderr_bytes=len(exc.detail.encode("utf-8")),
             )
             raise
         record.set_runner(
@@ -347,7 +345,7 @@ def _run_stats(args, extra):
 def main(
     argv=None,
     *,
-    pi_executable: str = "pi",
+    agent_executable: str | None = None,
     rg_executable: str = "rg",
 ) -> int:
     """Run the ``auggie`` command line and return an exit code."""
@@ -367,7 +365,7 @@ def main(
         return func(args)
     try:
         if args.command == "retrieve":
-            return _run_retrieve(args, extra, pi_executable=pi_executable)
+            return _run_retrieve(args, extra, agent_executable=agent_executable)
         if args.command == "stats":
             return _run_stats(args, extra)
         return _run_search(args, extra, rg_executable=rg_executable)
@@ -377,11 +375,8 @@ def main(
     except (ValueError, FileNotFoundError) as exc:
         _emit_error(str(exc))
         return 2
-    except pi_runner.PiRunnerError as exc:
-        message = str(exc)
-        if isinstance(exc, pi_runner.PiExecutionError) and exc.stderr:
-            message = f"{message}: {exc.stderr}"
-        _emit_error(message)
+    except agent_runner.AgentError as exc:
+        _emit_error(str(exc))
         return 2
     except Exception as exc:  # timeout, unexpected runner failure
         _emit_error(str(exc) or exc.__class__.__name__)
