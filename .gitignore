@@ -178,3 +178,6 @@ pyrightconfig.json
 
 # SonarQube
 .scannerwork/
+
+# auggie semantic index
+.auggie/

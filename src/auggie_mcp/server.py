@@ -10,6 +10,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
+from auggie.mcp_tools import register_tools
 from auggie_mcp import pi_runner, telemetry, tgrep_runner
 from auggie_mcp.index_refresh import IndexRefreshError, refresh_index
 from auggie_mcp.output_processing import (
@@ -117,7 +118,7 @@ def create_server(
     *,
     executable: str = "pi",
     tgrep_executable: str = "tgrep",
-    ogrep_executable: str = "ogrep",
+    semantic_executable: str = "auggie",
     repository_root=None,
     client_factory: Callable[[], Any] | None = None,
     processor_factory: Callable[[Any], OutputProcessor] | None = None,
@@ -264,7 +265,7 @@ def create_server(
                 with record.stage("index_refresh"):
                     await asyncio.gather(
                         refresh_index(tgrep_executable, repository_path),
-                        refresh_index(ogrep_executable, repository_path),
+                        refresh_index(semantic_executable, repository_path),
                     )
                 with record.stage("runner"):
                     try:
@@ -405,6 +406,8 @@ def create_server(
             raise
         finally:
             record.finish(outcome, error)
+
+    register_tools(server)
 
     return server
 

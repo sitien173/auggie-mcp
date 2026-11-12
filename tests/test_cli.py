@@ -59,7 +59,10 @@ class CliParserTest(unittest.TestCase):
                 subparsers = action
                 break
         self.assertIsNotNone(subparsers)
-        self.assertEqual(set(subparsers.choices), {"retrieve", "search", "stats"})
+        self.assertEqual(
+            set(subparsers.choices),
+            {"retrieve", "search", "stats", *SEMANTIC_COMMANDS},
+        )
 
     def test_retrieve_parses_repository_and_query(self):
         args, extra = parse(["retrieve", "/tmp/repo", "where is main"])
@@ -759,6 +762,48 @@ class CliStatsTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("--since", result.stdout)
+
+
+SEMANTIC_COMMANDS = (
+    "index query chunk reset reindex clean cache-report delete log status "
+    "health tune watch"
+).split()
+
+
+class SemanticSubcommandTest(unittest.TestCase):
+    def run_main(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_help_lists_all_sixteen_subcommands(self):
+        text = cli.build_parser().format_help()
+        for name in ["retrieve", "search", "stats", *SEMANTIC_COMMANDS]:
+            with self.subTest(name=name):
+                self.assertIn(name, text)
+
+    def test_status_help_exits_zero(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(["status", "--help"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn("status", out.getvalue())
+
+    def test_status_dispatches_to_cloned_handler(self):
+        with patch("auggie.cli.cmd_status", return_value=7) as handler:
+            code, _, _ = self.run_main("status")
+        self.assertEqual(code, 7)
+        handler.assert_called_once()
+
+    def test_cloned_subcommand_unknown_extra_argument_returns_two(self):
+        with patch("auggie.cli.cmd_status", return_value=0) as handler:
+            code, out, err = self.run_main("status", "--bogus-flag")
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("unrecognized arguments", json.loads(err)["error"])
+        handler.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -24,14 +24,14 @@ from auggie_mcp.output_processing import (
 TESTS_DIR = Path(__file__).resolve().parent
 FAKE_PI = TESTS_DIR / "fake_pi.py"
 FAKE_TGREP = TESTS_DIR / "fake_tgrep.py"
-FAKE_OGREP = TESTS_DIR / "fake_ogrep.py"
+FAKE_AUGGIE = TESTS_DIR / "fake_auggie.py"
 
 if not os.access(FAKE_PI, os.X_OK):
     os.chmod(FAKE_PI, 0o755)
 if not os.access(FAKE_TGREP, os.X_OK):
     os.chmod(FAKE_TGREP, 0o755)
-if not os.access(FAKE_OGREP, os.X_OK):
-    os.chmod(FAKE_OGREP, 0o755)
+if not os.access(FAKE_AUGGIE, os.X_OK):
+    os.chmod(FAKE_AUGGIE, 0o755)
 
 
 _SAVED_TELEMETRY_DIR = None
@@ -57,7 +57,7 @@ def make_server(repository_root=None, client_factory=None, processor_factory=Non
     return server.create_server(
         executable=str(FAKE_PI),
         tgrep_executable=str(FAKE_TGREP),
-        ogrep_executable=str(FAKE_OGREP),
+        semantic_executable=str(FAKE_AUGGIE),
         repository_root=repository_root,
         client_factory=client_factory,
         processor_factory=processor_factory,
@@ -112,7 +112,30 @@ class ServerTest(unittest.TestCase):
         srv = make_server()
         tools = self.run_async(srv.list_tools())
         names = [t.name for t in tools]
-        self.assertEqual(names, ["codebase_retrieval", "codebase_search"])
+        self.assertEqual(
+            names,
+            [
+                "codebase_retrieval",
+                "codebase_search",
+                "auggie_query",
+                "auggie_context",
+                "auggie_status",
+            ],
+        )
+
+    def test_semantic_tool_schemas_expose_expected_properties(self):
+        srv = make_server()
+        tools = {t.name: t for t in self.run_async(srv.list_tools())}
+        expected = {
+            "auggie_query": {"query", "repo_path", "top_k", "mode"},
+            "auggie_context": {"query", "repo_path", "top_k", "context_lines"},
+            "auggie_status": {"repo_path"},
+        }
+        for name, props in expected.items():
+            with self.subTest(tool=name):
+                self.assertEqual(
+                    set(tools[name].input_schema["properties"]), props
+                )
 
     def test_no_resources_or_prompts(self):
         srv = make_server()
@@ -358,7 +381,7 @@ class ServerTest(unittest.TestCase):
             self.read_index_log(log), [["tgrep", ["index", repo], repo]]
         )
 
-    def test_retrieval_refreshes_tgrep_and_ogrep_indexes_first(self):
+    def test_retrieval_refreshes_tgrep_and_auggie_indexes_first(self):
         log = Path(self.tmp.name) / "index.log"
         srv = make_server()
         with patch.dict(os.environ, {"FAKE_INDEX_LOG": str(log)}):
@@ -372,7 +395,7 @@ class ServerTest(unittest.TestCase):
         repo = os.path.realpath(self.repo)
         self.assertCountEqual(
             self.read_index_log(log),
-            [["tgrep", ["index", repo], repo], ["ogrep", ["index", repo], repo]],
+            [["tgrep", ["index", repo], repo], ["auggie", ["index", repo], repo]],
         )
 
     def test_search_index_refresh_failure_is_tool_error(self):
@@ -384,18 +407,18 @@ class ServerTest(unittest.TestCase):
     def test_retrieval_index_refresh_failure_is_tool_error(self):
         srv = make_server()
         args = {"repository_path": str(self.repo), "query": "q"}
-        with patch.dict(os.environ, {"FAKE_INDEX_FAIL": "ogrep"}):
-            with self.assertRaisesRegex(ToolError, "ogrep index boom"):
+        with patch.dict(os.environ, {"FAKE_INDEX_FAIL": "auggie"}):
+            with self.assertRaisesRegex(ToolError, "auggie index boom"):
                 self.run_async(srv.call_tool("codebase_retrieval", args))
 
-    def test_missing_ogrep_returns_tool_error(self):
+    def test_missing_auggie_returns_tool_error(self):
         srv = server.create_server(
             executable=str(FAKE_PI),
             tgrep_executable=str(FAKE_TGREP),
-            ogrep_executable="/definitely/missing/ogrep",
+            semantic_executable="/definitely/missing/auggie",
         )
         args = {"repository_path": str(self.repo), "query": "q"}
-        with self.assertRaisesRegex(ToolError, "ogrep"):
+        with self.assertRaisesRegex(ToolError, "auggie"):
             self.run_async(srv.call_tool("codebase_retrieval", args))
 
     # ---- 4. Missing API key fail-open ---------------------------------
@@ -885,8 +908,8 @@ class ServerTest(unittest.TestCase):
         fake_pi.symlink_to(FAKE_PI)
         fake_tgrep = Path(fake_bin_dir.name) / "tgrep"
         fake_tgrep.symlink_to(FAKE_TGREP)
-        fake_ogrep = Path(fake_bin_dir.name) / "ogrep"
-        fake_ogrep.symlink_to(FAKE_OGREP)
+        fake_auggie = Path(fake_bin_dir.name) / "auggie"
+        fake_auggie.symlink_to(FAKE_AUGGIE)
         env["PATH"] = fake_bin_dir.name + os.pathsep + env.get("PATH", "")
         # Ensure fail-open for test determinism without real API key
         env.pop("TYPESAFE_API_KEY", None)
@@ -938,7 +961,16 @@ class ServerTest(unittest.TestCase):
             resp = request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
             tools = resp["result"]["tools"]
             names = [t["name"] for t in tools]
-            self.assertEqual(names, ["codebase_retrieval", "codebase_search"])
+            self.assertEqual(
+                names,
+                [
+                    "codebase_retrieval",
+                    "codebase_search",
+                    "auggie_query",
+                    "auggie_context",
+                    "auggie_status",
+                ],
+            )
 
             r_tool = next(t for t in tools if t["name"] == "codebase_retrieval")
             s_tool = next(t for t in tools if t["name"] == "codebase_search")

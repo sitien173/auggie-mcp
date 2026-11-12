@@ -1,4 +1,4 @@
-"""Incremental tgrep and ogrep index refresh so searches see current files."""
+"""Incremental tgrep and auggie semantic index refresh so searches see current files."""
 
 import asyncio
 
@@ -15,7 +15,7 @@ class IndexRefreshError(RuntimeError):
 async def refresh_index(executable, root) -> None:
     """Run ``<executable> index <root>`` in ``root`` and wait for it.
 
-    Both tgrep and ogrep update incrementally, so unchanged files are skipped.
+    Both tgrep and the auggie semantic index update incrementally, so unchanged files are skipped.
     Cancellation terminates the whole process group.
     """
     repo = pi_runner.validate_repository(root)

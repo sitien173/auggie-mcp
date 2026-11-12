@@ -4,12 +4,19 @@ build-backend = "hatchling.build"
 
 [project]
 name = "auggie-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "Python MCP server exposing codebase retrieval through an ephemeral Pi subprocess"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "mcp>=2,<3",
     "typesafe-sdk",
+    "lancedb==0.33.0",
+    "numpy==2.5.0",
+    "pyarrow==24.0.0",
+    "tqdm==4.68.3",
+    "tree-sitter==0.25.2",
+    "voyageai==0.4.1",
+    "watchdog==6.0.0",
 ]
 
 [project.scripts]
@@ -17,12 +24,13 @@ auggie-mcp = "auggie_mcp.server:run"
 auggie = "auggie_mcp.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/auggie_mcp"]
+packages = ["src/auggie_mcp", "src/auggie"]
 include = ["system_prompt.md"]
 
 [dependency-groups]
 dev = [
     "coverage>=7.16.2",
+    "pytest",
 ]
 
 [tool.coverage.run]
@@ -32,3 +40,7 @@ relative_files = true
 
 [tool.coverage.xml]
 output = "coverage.xml"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/semantic"]
+addopts = "-ra -p no:cacheprovider"

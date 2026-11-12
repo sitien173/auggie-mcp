@@ -14,7 +14,7 @@ uv sync
 
 Dependencies including `mcp` and `typesafe-sdk` install automatically with no manual HTTP client or transport configuration required.
 
-The `auggie-mcp` console command and `python -m auggie_mcp` both start the stdio server. The separate `auggie` console command exposes the retrieval and search runners on the command line.
+The `auggie-mcp` console command and `python -m auggie_mcp` both start the stdio server. The separate `auggie` console command exposes the retrieval and search runners and the in-tree semantic index commands on the command line.
 
 ## CLI
 
@@ -39,6 +39,15 @@ Command help is available for both commands:
 uv run auggie --help
 uv run auggie retrieve --help
 uv run auggie search --help
+```
+
+### Semantic index commands
+
+The `auggie` command also carries 13 subcommands of the in-tree semantic search: `index`, `query`, `chunk`, `reset`, `reindex`, `clean`, `cache-report`, `delete`, `log`, `status`, `health`, `tune`, and `watch`. They build and query a per-repository semantic index. `uv run auggie <subcommand> --help` shows the flags of each one.
+
+```bash
+uv run auggie index <repository>
+uv run auggie query "<natural language query>" --repo-root <repository>
 ```
 
 ## MCP configuration
@@ -82,10 +91,24 @@ or with the module entry point:
 - `AUGGIE_JEV_TIMEOUT_SECONDS`: Total processing timeout in seconds for classification and retention (default: `30.0`).
 - `AUGGIE_JEV_ARCHIVE_DIR`: Custom directory for storing pre-pruning result archives. If unset, defaults to `$XDG_CACHE_HOME/auggie-mcp/jev` or `~/.cache/auggie-mcp/jev`.
 - `AUGGIE_JEV_MAX_REQUESTS`: Maximum TypeSafe API requests allowed per processing pass (default: `40`).
+- `VOYAGE_API_KEY`: API key for Voyage embeddings and reranking. Required to index and to run semantic queries.
+- `AUGGIE_MODEL`, `AUGGIE_DIMENSIONS`: Embedding model and dimensions. They must match the indexed model.
+- `AUGGIE_SEARCH_MODE`: Default search mode: `semantic`, `fulltext`, or `hybrid`.
+- `AUGGIE_RERANK_MODEL`, `AUGGIE_RERANK_TOPN`: Voyage rerank model and candidate count.
+- `AUGGIE_HYBRID_ALPHA`, `AUGGIE_FUSION_METHOD`, `AUGGIE_RRF_K`, `AUGGIE_ANN_OVERFETCH`: Hybrid ranking controls.
+- `AUGGIE_CONFIDENCE_MODE`, `AUGGIE_CONFIDENCE_HIGH`, `AUGGIE_CONFIDENCE_MEDIUM`, `AUGGIE_CONFIDENCE_LOW`, `AUGGIE_RELATIVE_HIGH`, `AUGGIE_RELATIVE_MEDIUM`, `AUGGIE_RELATIVE_LOW`, `AUGGIE_ABSOLUTE_STRONG`, `AUGGIE_ABSOLUTE_EXPECTED`, `AUGGIE_ABSOLUTE_WEAK`: Confidence labelling thresholds.
+- `AUGGIE_CACHE_DISABLED`: Set to `1` to bypass all query caches.
+- `AUGGIE_CACHE_L1_MAX`, `AUGGIE_CACHE_L1_TTL`, `AUGGIE_CACHE_L2_MAX`, `AUGGIE_CACHE_L3_MAX`: Query cache sizes and time to live.
+- `AUGGIE_VOYAGE_TIMEOUT`, `AUGGIE_VOYAGE_RETRIES`: Voyage request timeout and retry count.
+- `AUGGIE_CHUNK_LINES`, `AUGGIE_OVERLAP_LINES`: Lines per chunk and overlap lines between chunks. `auggie tune` can save the optimal chunk size as `AUGGIE_CHUNK_LINES` in a `.env` file.
+- `AUGGIE_AST_CHUNKING`: Set to `1`, `true`, `yes`, or `on` to enable AST chunking.
+- `AUGGIE_BATCH_SIZE`: Maximum texts per Voyage request.
+- `AUGGIE_VOYAGE_CHARS_PER_TOKEN`: Characters-per-token ratio used to estimate tokens when batching Voyage requests.
+- `AUGGIE_WATCH_DEBOUNCE_MS`: Debounce delay for `auggie watch`.
 
 ## Tools
 
-The server exposes two tools, both returning structured replacement envelopes:
+The server exposes `codebase_retrieval` and `codebase_search`, both returning structured replacement envelopes. It also registers three semantic index tools, described under [Semantic index tools](#semantic-index-tools).
 
 ### `codebase_retrieval(repository_path, query, goal=None)`
 
@@ -142,6 +165,14 @@ Returns a `SearchEnvelope`:
 }
 ```
 
+### Semantic index tools
+
+- `auggie_query(query, repo_path=".", top_k=10, mode=None)`: Ranked semantic code search hits without surrounding context.
+- `auggie_context(query, repo_path=".", top_k=10, context_lines=2)`: Semantic code hits with surrounding source lines for review.
+- `auggie_status(repo_path=".")`: Status of the auggie index in a repository.
+
+Each repository keeps its index in a `.auggie/` directory at the repository root. Paths listed in a `.auggieignore` file at the repository root are not indexed.
+
 ## Behavior
 
 - **Classification:** Every eligible output chunk is classified into one of five categories: `reference`, `diagnostic`, `result`, `progress`, or `unknown`.
@@ -150,7 +181,7 @@ Returns a `SearchEnvelope`:
 - **Uncertainty Floor:** Only non-protected chunks scored with retention probability <= `0.1` may be omitted. Omitted contiguous blocks render as deterministic omission markers.
 - **Fail-Open Semantics:** Any API failure, invalid response, timeout, or missing API key fails open. The server returns exact original runner output marked `status: "unclassified"` and `retention: "failed_open"`. Jev errors never become MCP tool errors.
 - **Exit Codes:** Search exit code `1` (no matches found) remains a normal successful MCP call, not a tool error. Operational runner errors (missing executables, path escapes, invalid flags, process crashes) remain MCP tool errors.
-- **Index Refresh:** Before every call the server incrementally updates the search indexes so results reflect current files on disk. `codebase_search` runs `tgrep index` on the server startup repository. `codebase_retrieval` runs `tgrep index` and `ogrep index` on `repository_path` before starting Pi. Unchanged files are skipped. A failed or missing indexer is an MCP tool error.
+- **Index Refresh:** Before every call the server incrementally updates the search indexes so results reflect current files on disk. `codebase_search` runs `tgrep index` on the server startup repository. `codebase_retrieval` runs `tgrep index` and `auggie index` on `repository_path` before starting Pi. Unchanged files are skipped. A failed or missing indexer is an MCP tool error.
 - **Lifespan Management:** A single `AsyncTypeSafeClient` is created on server lifespan startup and shared across concurrent calls with SDK retries disabled. It closes cleanly on server shutdown alongside the bounded archive executor.
 
 ## Privacy
@@ -165,6 +196,8 @@ Returns a `SearchEnvelope`:
 - **Writable tools.** Pi is started with no tool allowlist. Built-in tools, including `bash`, `edit`, and `write`, remain available. The bundled read-only system prompt is a behavioral control only, not a security boundary. A malicious repository or query could cause Pi to modify files or run commands.
 - **Unlimited concurrency.** Requests start immediately; there is no concurrency limit or queue. Concurrent calls may exhaust CPU, memory, or model API quota, and concurrent requests may modify the same repository.
 - **Model credentials.** Pi uses the caller's configured provider credentials.
+- **`auggie` command name collision.** The Augment `auggie` CLI uses the same command name as this package. If it precedes this package on `PATH`, `auggie index` from the server and `auggie query` or `auggie chunk` from the Pi subprocess resolve to the wrong binary.
+- **Previous indexes.** Indexes built by the previous external tool are not read. Run `auggie index` for each repository.
 
 ## Telemetry
 
@@ -213,6 +246,7 @@ uv run python -m unittest tests.test_server -v
 uv run python -m unittest tests.test_output_processing -v
 uv run python -m unittest tests.test_cli -v
 uv run python -m unittest discover -s tests -v
+uv run pytest tests/semantic -q
 ```
 
 Live tests exercising external APIs are strictly opt-in and require appropriate credentials:

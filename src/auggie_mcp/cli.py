@@ -2,7 +2,9 @@
 
 Exposes ``auggie retrieve`` and ``auggie search`` by calling ``pi_runner`` and
 ``tgrep_runner`` directly. Output is JSON by default and text with ``--human``.
-MCP registration and transport behavior are unchanged.
+Also registers the semantic index subcommands from ``auggie.cli`` (index, query,
+chunk, reset, reindex, clean, cache-report, delete, log, status, health, tune,
+watch). MCP registration and transport behavior are unchanged.
 """
 
 import argparse
@@ -14,6 +16,7 @@ import re
 import sys
 from datetime import datetime, timedelta, timezone
 
+from auggie import cli as semantic_cli
 from auggie_mcp import pi_runner, telemetry, tgrep_runner
 
 
@@ -100,6 +103,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print one JSON object instead of text.",
     )
+
+    semantic_cli._add_index_command(subparsers)
+    semantic_cli._add_query_command(subparsers)
+    semantic_cli._add_chunk_command(subparsers)
+    semantic_cli._add_reset_command(subparsers)
+    semantic_cli._add_reindex_command(subparsers)
+    semantic_cli._add_clean_command(subparsers)
+    semantic_cli._add_cache_report_command(subparsers)
+    semantic_cli._add_delete_command(subparsers)
+    semantic_cli._add_log_command(subparsers)
+    semantic_cli._add_status_command(subparsers)
+    semantic_cli._add_health_command(subparsers)
+    semantic_cli._add_tune_command(subparsers)
+    semantic_cli._add_watch_command(subparsers)
 
     return parser
 
@@ -342,6 +359,12 @@ def main(
         return 2
 
     telemetry.prune_old_files()
+    func = getattr(args, "func", None)
+    if func is not None:
+        if extra:
+            _emit_error("unrecognized arguments: " + " ".join(extra))
+            return 2
+        return func(args)
     try:
         if args.command == "retrieve":
             return _run_retrieve(args, extra, pi_executable=pi_executable)

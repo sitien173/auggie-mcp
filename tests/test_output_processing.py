@@ -31,7 +31,7 @@ class TestPhase1DependencyAndVersion(unittest.TestCase):
     def test_project_version_in_pyproject(self):
         pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
         content = pyproject_path.read_text(encoding="utf-8")
-        self.assertIn('version = "0.3.0"', content)
+        self.assertIn('version = "0.4.0"', content)
 
     def test_typesafe_sdk_runtime_dependency_declared(self):
         pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
