@@ -160,6 +160,35 @@ Returns a `SearchEnvelope`:
 - Absolute local repository paths are sanitized and never intentionally sent to TypeSafe AI.
 - No local redaction layer is applied before TypeSafe submission; sensitive strings present in command outputs may leave the local host if an API key is configured.
 
+## Telemetry
+
+The server and the `auggie` CLI record one local event for every `codebase_retrieval` and `codebase_search` call. Events stay on this machine. The telemetry code makes no network requests.
+
+Each event records:
+
+- The full repository path, query, pattern, path, flags, and goal.
+- The error type and message, if the call failed.
+- Timings, the outcome, and runner and output-processing statistics.
+- For MCP calls, the client name and version.
+
+Events are appended to daily files named `events-YYYY-MM-DD.jsonl`. The directory is the first of these that applies:
+
+1. `AUGGIE_TELEMETRY_DIR`
+2. `$XDG_STATE_HOME/auggie-mcp/telemetry`
+3. `~/.local/state/auggie-mcp/telemetry`
+
+The directory has mode 0700 and the files have mode 0600. Files older than 30 days are deleted. Set `AUGGIE_TELEMETRY_RETENTION_DAYS` to a positive integer to change the window. Set `AUGGIE_TELEMETRY=0` to turn telemetry off.
+
+Warning: queries, patterns, and paths are stored as written. Do not search for secrets or personal data while telemetry is on.
+
+Summarize the files with `auggie stats`:
+
+```bash
+auggie stats                  # last 7 days, text
+auggie stats --since 24h      # Nd or Nh, N greater than 0
+auggie stats --json           # one JSON object
+```
+
 ## Archives and Recovery
 
 - Results exceeding the 10,000 estimated token threshold are archived locally before retention scoring begins.

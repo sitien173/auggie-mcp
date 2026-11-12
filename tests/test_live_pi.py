@@ -9,6 +9,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from auggie_mcp import server
 
@@ -26,6 +27,9 @@ class LivePiServerTest(unittest.TestCase):
         self.repo = Path(self.tmp.name) / "repo"
         self.repo.mkdir()
         (self.repo / "hello.txt").write_text("hello world\n")
+        patcher = mock.patch.dict(os.environ, {"AUGGIE_TELEMETRY_DIR": str(Path(self.tmp.name) / "telemetry")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def run_async(self, coro):
         return asyncio.run(coro)

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -31,6 +32,25 @@ if not os.access(FAKE_TGREP, os.X_OK):
     os.chmod(FAKE_TGREP, 0o755)
 if not os.access(FAKE_OGREP, os.X_OK):
     os.chmod(FAKE_OGREP, 0o755)
+
+
+_SAVED_TELEMETRY_DIR = None
+_TELEMETRY_TMP = None
+
+
+def setUpModule():
+    global _SAVED_TELEMETRY_DIR, _TELEMETRY_TMP
+    _SAVED_TELEMETRY_DIR = os.environ.get("AUGGIE_TELEMETRY_DIR")
+    _TELEMETRY_TMP = tempfile.mkdtemp()
+    os.environ["AUGGIE_TELEMETRY_DIR"] = _TELEMETRY_TMP
+
+
+def tearDownModule():
+    if _SAVED_TELEMETRY_DIR is None:
+        os.environ.pop("AUGGIE_TELEMETRY_DIR", None)
+    else:
+        os.environ["AUGGIE_TELEMETRY_DIR"] = _SAVED_TELEMETRY_DIR
+    shutil.rmtree(_TELEMETRY_TMP, ignore_errors=True)
 
 
 def make_server(repository_root=None, client_factory=None, processor_factory=None):
@@ -101,7 +121,7 @@ class ServerTest(unittest.TestCase):
 
     def test_server_advertised_version_is_0_2_0(self):
         srv = make_server()
-        self.assertEqual(srv.version, "0.2.0")
+        self.assertEqual(srv.version, "0.3.0")
 
     def test_retrieval_tool_schema_matches_phase3_contract(self):
         srv = make_server()
@@ -764,7 +784,7 @@ class ServerTest(unittest.TestCase):
                 }
             )
             self.assertIn("result", resp)
-            self.assertEqual(resp["result"]["serverInfo"]["version"], "0.2.0")
+            self.assertEqual(resp["result"]["serverInfo"]["version"], "0.3.0")
 
             # 2. notifications/initialized
             proc.stdin.write(
@@ -849,6 +869,284 @@ class ServerTest(unittest.TestCase):
             proc.wait()
             proc.stdout.close()
             proc.stderr.close()
+
+
+class TelemetryServerTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name) / "repo"
+        self.repo.mkdir()
+        (self.repo / "hello.txt").write_text("hello world\n")
+        self.tdir = Path(self.tmp.name) / "telemetry"
+        env = patch.dict(os.environ, {"AUGGIE_TELEMETRY_DIR": str(self.tdir)})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("AUGGIE_TELEMETRY", None)
+
+    def run_async(self, coro):
+        return asyncio.run(coro)
+
+    def events(self):
+        out = []
+        for path in sorted(self.tdir.glob("events-*.jsonl")):
+            out.extend(json.loads(l) for l in path.read_text().splitlines())
+        return out
+
+    def retrieve(self, srv):
+        return self.run_async(
+            srv.call_tool(
+                "codebase_retrieval",
+                {"repository_path": str(self.repo), "query": "q", "goal": "g"},
+            )
+        )
+
+    def assert_stage_keys(self, event):
+        for key in ("index_refresh", "runner", "processing", "total"):
+            self.assertIn(key, event["durations_ms"])
+
+    def test_retrieval_ok_emits_one_event(self):
+        result = self.retrieve(make_server())
+        (event,) = self.events()
+        sc = result.structured_content
+        self.assertEqual(event["source"], "mcp")
+        self.assertEqual(event["tool"], "codebase_retrieval")
+        self.assertEqual(event["outcome"], "ok")
+        self.assertIsNone(event["error"])
+        self.assertEqual(
+            event["input"],
+            {"repository_path": str(self.repo), "query": "q", "goal": "g"},
+        )
+        self.assert_stage_keys(event)
+        self.assertEqual(
+            event["runner"],
+            {
+                "exit_code": 0,
+                "stdout_bytes": len("Fake final answer.".encode()),
+                "stderr_bytes": 0,
+            },
+        )
+        proc = event["processing"]
+        for key in ("status", "retention", "estimated_tokens"):
+            self.assertEqual(proc[key], sc["processing"][key])
+        self.assertEqual(proc["output_bytes"], len(sc["data"]["result"].encode()))
+
+    def test_retrieval_error_records_tool_error_and_runner(self):
+        error = pi_runner.PiExecutionError(
+            "Pi exited with status 3", returncode=3, stderr="fake pi failure"
+        )
+        with patch.object(pi_runner, "run_pi", AsyncMock(side_effect=error)):
+            with self.assertRaises(ToolError) as cm:
+                self.retrieve(make_server())
+        (event,) = self.events()
+        self.assertEqual(event["outcome"], "error")
+        self.assertEqual(event["error"]["type"], "ToolError")
+        self.assertIn(event["error"]["message"], str(cm.exception))
+        self.assertEqual(
+            event["runner"],
+            {
+                "exit_code": 3,
+                "stdout_bytes": 0,
+                "stderr_bytes": len(b"fake pi failure"),
+            },
+        )
+        self.assertIsNone(event["processing"])
+        self.assertIn("total", event["durations_ms"])
+
+    def test_retrieval_other_error_leaves_runner_null(self):
+        with patch.object(
+            pi_runner, "run_pi", AsyncMock(side_effect=asyncio.TimeoutError())
+        ):
+            with self.assertRaises(ToolError):
+                self.retrieve(make_server())
+        (event,) = self.events()
+        self.assertEqual(event["outcome"], "error")
+        self.assertIsNone(event["runner"])
+
+    def test_retrieval_cancelled_emits_one_event(self):
+        async def scenario():
+            started = asyncio.Event()
+
+            async def wait_forever(*args, **kwargs):
+                started.set()
+                await asyncio.Event().wait()
+
+            with patch.object(pi_runner, "run_pi", side_effect=wait_forever):
+                task = asyncio.create_task(
+                    make_server().call_tool(
+                        "codebase_retrieval",
+                        {"repository_path": str(self.repo), "query": "q"},
+                    )
+                )
+                await started.wait()
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+
+        self.run_async(scenario())
+        (event,) = self.events()
+        self.assertEqual(event["outcome"], "cancelled")
+        self.assertIsNone(event["error"])
+        self.assertIn("total", event["durations_ms"])
+
+    def search(self, srv, pattern, **extra):
+        return self.run_async(
+            srv.call_tool("codebase_search", {"pattern": pattern, **extra})
+        )
+
+    def test_search_ok_emits_one_event(self):
+        result = self.search(make_server(self.repo), "hello", flags=["-F"])
+        (event,) = self.events()
+        sc = result.structured_content
+        self.assertEqual(event["source"], "mcp")
+        self.assertEqual(event["tool"], "codebase_search")
+        self.assertEqual(event["outcome"], "ok")
+        self.assertEqual(
+            event["input"],
+            {
+                "pattern": "hello",
+                "path": ".",
+                "flags": ["-F"],
+                "goal": None,
+                "repository_path": str(self.repo),
+            },
+        )
+        self.assert_stage_keys(event)
+        self.assertEqual(event["runner"]["exit_code"], 0)
+        self.assertEqual(
+            event["runner"]["stdout_bytes"], len(sc["data"]["stdout"].encode())
+        )
+        self.assertEqual(
+            event["runner"]["stderr_bytes"], len(sc["data"]["stderr"].encode())
+        )
+        proc = event["processing"]
+        for key in ("status", "retention", "estimated_tokens"):
+            self.assertEqual(proc[key], sc["processing"][key])
+        self.assertEqual(proc["output_bytes"], len(sc["data"]["stdout"].encode()))
+
+    def test_search_no_match_outcome(self):
+        self.search(make_server(self.repo), "nomatch")
+        (event,) = self.events()
+        self.assertEqual(event["outcome"], "no_match")
+        self.assertEqual(event["runner"]["exit_code"], 1)
+        self.assert_stage_keys(event)
+
+    def test_search_exit_two_records_error(self):
+        with self.assertRaises(ToolError) as cm:
+            self.search(make_server(self.repo), "bad[")
+        (event,) = self.events()
+        self.assertEqual(event["outcome"], "error")
+        self.assertEqual(event["error"]["type"], "ToolError")
+        self.assertIn(event["error"]["message"], str(cm.exception))
+        self.assertEqual(event["runner"]["exit_code"], 2)
+        self.assertIsNone(event["processing"])
+
+    def test_search_cancelled_emits_one_event(self):
+        async def scenario():
+            started = asyncio.Event()
+
+            class BlockingProcessor:
+                async def process_search(self, *args, **kwargs):
+                    started.set()
+                    await asyncio.Event().wait()
+
+            srv = make_server(
+                self.repo, processor_factory=lambda _: BlockingProcessor()
+            )
+            task = asyncio.create_task(
+                srv.call_tool("codebase_search", {"pattern": "hello"})
+            )
+            await started.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        self.run_async(scenario())
+        (event,) = self.events()
+        self.assertEqual(event["outcome"], "cancelled")
+
+    def test_disabled_writes_nothing_and_results_match(self):
+        on = self.search(make_server(self.repo), "hello")
+        on_retrieval = self.retrieve(make_server())
+        self.assertEqual(len(self.events()), 2)
+        shutil.rmtree(self.tdir)
+        with patch.dict(os.environ, {"AUGGIE_TELEMETRY": "0"}):
+            off = self.search(make_server(self.repo), "hello")
+            off_retrieval = self.retrieve(make_server())
+        self.assertFalse(self.tdir.exists())
+        self.assertEqual(on.structured_content, off.structured_content)
+        self.assertEqual(
+            on_retrieval.structured_content, off_retrieval.structured_content
+        )
+
+    def test_unwritable_dir_leaves_results_and_errors_unchanged(self):
+        good = self.search(make_server(self.repo), "hello")
+        with self.assertRaises(ToolError) as good_err:
+            self.search(make_server(self.repo), "bad[")
+        blocker = Path(self.tmp.name) / "blocker"
+        blocker.write_text("x")
+        with patch.dict(
+            os.environ, {"AUGGIE_TELEMETRY_DIR": str(blocker / "sub")}
+        ):
+            bad = self.search(make_server(self.repo), "hello")
+            with self.assertRaises(ToolError) as bad_err:
+                self.search(make_server(self.repo), "bad[")
+        self.assertEqual(good.structured_content, bad.structured_content)
+        self.assertEqual(str(good_err.exception), str(bad_err.exception))
+
+    def test_lifespan_prunes_stale_files_at_startup(self):
+        self.tdir.mkdir(parents=True)
+        stale = self.tdir / "events-2000-01-01.jsonl"
+        stale.write_text("{}\n")
+
+        async def scenario():
+            srv = make_server(self.repo)
+            async with srv.settings.lifespan(srv):
+                self.assertFalse(stale.exists())
+
+        self.run_async(scenario())
+
+    def test_lifespan_prunes_in_client_branches(self):
+        class PlainClient:
+            pass
+
+        for factory in (FakeClientWithCounters, PlainClient):
+            with self.subTest(factory=factory.__name__):
+                self.tdir.mkdir(parents=True, exist_ok=True)
+                stale = self.tdir / "events-2000-01-01.jsonl"
+                stale.write_text("{}\n")
+
+                async def scenario():
+                    srv = make_server(self.repo, client_factory=factory)
+                    async with srv.settings.lifespan(srv):
+                        self.assertFalse(stale.exists())
+
+                self.run_async(scenario())
+
+    def test_client_info_reads_ctx_defensively(self):
+        from types import SimpleNamespace as NS
+
+        ctx = NS(
+            session=NS(
+                client_params=NS(client_info=NS(name="claude-code", version="2.1"))
+            )
+        )
+        self.assertEqual(
+            server._client_info(ctx), {"name": "claude-code", "version": "2.1"}
+        )
+        self.assertIsNone(server._client_info(None))
+        self.assertIsNone(server._client_info(NS()))
+        self.assertIsNone(server._client_info(NS(session=NS(client_params=None))))
+        self.assertIsNone(
+            server._client_info(NS(session=NS(client_params=NS(client_info=None))))
+        )
+
+        class Boom:
+            @property
+            def session(self):
+                raise RuntimeError("boom")
+
+        self.assertIsNone(server._client_info(Boom()))
 
 
 if __name__ == "__main__":

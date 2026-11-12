@@ -100,7 +100,7 @@ class PiRunnerTest(unittest.TestCase):
             "--model",
             "gpt-6-luna",
             "--thinking",
-            "xhigh",
+            "high",
             "--approve",
             "--print",
             "--no-session",
