@@ -36,16 +36,21 @@ if not os.access(FAKE_AUGGIE, os.X_OK):
 
 _SAVED_TELEMETRY_DIR = None
 _TELEMETRY_TMP = None
+_HOME_PATCH = None
 
 
 def setUpModule():
-    global _SAVED_TELEMETRY_DIR, _TELEMETRY_TMP
+    global _SAVED_TELEMETRY_DIR, _TELEMETRY_TMP, _HOME_PATCH
     _SAVED_TELEMETRY_DIR = os.environ.get("AUGGIE_TELEMETRY_DIR")
     _TELEMETRY_TMP = tempfile.mkdtemp()
     os.environ["AUGGIE_TELEMETRY_DIR"] = _TELEMETRY_TMP
+    # Keep the user's ~/.auggie/config.toml from selecting a real agent driver.
+    _HOME_PATCH = patch.dict(os.environ, {"HOME": _TELEMETRY_TMP})
+    _HOME_PATCH.start()
 
 
 def tearDownModule():
+    _HOME_PATCH.stop()
     if _SAVED_TELEMETRY_DIR is None:
         os.environ.pop("AUGGIE_TELEMETRY_DIR", None)
     else:
