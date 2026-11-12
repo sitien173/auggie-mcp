@@ -13,16 +13,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from auggie_mcp import cli, pi_runner, tgrep_runner
+from auggie_mcp import cli, pi_runner, rg_runner
 
 TESTS_DIR = Path(__file__).resolve().parent
 FAKE_PI = TESTS_DIR / "fake_pi.py"
-FAKE_TGREP = TESTS_DIR / "fake_tgrep.py"
+FAKE_RG = TESTS_DIR / "fake_rg.py"
 
 if not os.access(FAKE_PI, os.X_OK):
     os.chmod(FAKE_PI, 0o755)
-if not os.access(FAKE_TGREP, os.X_OK):
-    os.chmod(FAKE_TGREP, 0o755)
+if not os.access(FAKE_RG, os.X_OK):
+    os.chmod(FAKE_RG, 0o755)
 
 
 _saved_telemetry_dir = None
@@ -135,7 +135,7 @@ class CliMainTest(unittest.TestCase):
     def fake_executables(self):
         return {
             "pi_executable": str(FAKE_PI),
-            "tgrep_executable": str(FAKE_TGREP),
+            "rg_executable": str(FAKE_RG),
         }
 
     # ---- retrieve -----------------------------------------------------
@@ -233,8 +233,8 @@ class CliMainTest(unittest.TestCase):
         try:
             os.chdir(self.repo)
             with patch.object(
-                cli.tgrep_runner,
-                "run_tgrep",
+                cli.rg_runner,
+                "run_rg",
                 AsyncMock(
                     return_value={"stdout": "", "stderr": "", "exit_code": 0}
                 ),
@@ -271,8 +271,8 @@ class CliMainTest(unittest.TestCase):
         try:
             os.chdir(self.repo)
             with patch.object(
-                cli.tgrep_runner,
-                "run_tgrep",
+                cli.rg_runner,
+                "run_rg",
                 AsyncMock(
                     return_value={
                         "stdout": "hello.txt:1:hello world\n",
@@ -337,7 +337,7 @@ class CliMainTest(unittest.TestCase):
             code, out, err = self.invoke(
                 ["search", "hello"],
                 pi_executable=str(FAKE_PI),
-                tgrep_executable="/definitely/missing/tgrep",
+                rg_executable="/definitely/missing/rg",
             )
         finally:
             os.chdir(cwd)
@@ -391,7 +391,7 @@ class CliTelemetryTest(unittest.TestCase):
                 code = cli.main(
                     argv,
                     pi_executable=str(FAKE_PI),
-                    tgrep_executable=str(FAKE_TGREP),
+                    rg_executable=str(FAKE_RG),
                     **kwargs,
                 )
         finally:

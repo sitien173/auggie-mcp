@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic fake tgrep executable for tests."""
+"""Deterministic fake rg executable for tests."""
 
 import json
 import os
@@ -7,21 +7,7 @@ import sys
 import time
 
 
-def fake_index(name):
-    """Record ``<name> index <root>`` in $FAKE_INDEX_LOG; fail if $FAKE_INDEX_FAIL is name."""
-    log = os.environ.get("FAKE_INDEX_LOG")
-    if log:
-        with open(log, "a") as handle:
-            handle.write(json.dumps([name, sys.argv[1:], os.getcwd()]) + "\n")
-    if os.environ.get("FAKE_INDEX_FAIL") == name:
-        sys.stderr.write(f"{name} index boom\n")
-        return 2
-    return 0
-
-
 def main():
-    if sys.argv[1:2] == ["index"]:
-        return fake_index("tgrep")
     explicit_patterns = [
         sys.argv[index + 1]
         for index, value in enumerate(sys.argv[:-1])
@@ -32,7 +18,7 @@ def main():
     else:
         pattern = sys.argv[sys.argv.index("--") + 1]
     if pattern == "stall":
-        with open(os.path.join(os.getcwd(), "tgrep.pid"), "w") as handle:
+        with open(os.path.join(os.getcwd(), "rg.pid"), "w") as handle:
             handle.write(str(os.getpid()))
         time.sleep(300)
         return 0

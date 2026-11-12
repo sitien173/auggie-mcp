@@ -23,13 +23,13 @@ from auggie_mcp.output_processing import (
 
 TESTS_DIR = Path(__file__).resolve().parent
 FAKE_PI = TESTS_DIR / "fake_pi.py"
-FAKE_TGREP = TESTS_DIR / "fake_tgrep.py"
+FAKE_RG = TESTS_DIR / "fake_rg.py"
 FAKE_AUGGIE = TESTS_DIR / "fake_auggie.py"
 
 if not os.access(FAKE_PI, os.X_OK):
     os.chmod(FAKE_PI, 0o755)
-if not os.access(FAKE_TGREP, os.X_OK):
-    os.chmod(FAKE_TGREP, 0o755)
+if not os.access(FAKE_RG, os.X_OK):
+    os.chmod(FAKE_RG, 0o755)
 if not os.access(FAKE_AUGGIE, os.X_OK):
     os.chmod(FAKE_AUGGIE, 0o755)
 
@@ -56,7 +56,7 @@ def tearDownModule():
 def make_server(repository_root=None, client_factory=None, processor_factory=None):
     return server.create_server(
         executable=str(FAKE_PI),
-        tgrep_executable=str(FAKE_TGREP),
+        rg_executable=str(FAKE_RG),
         semantic_executable=str(FAKE_AUGGIE),
         repository_root=repository_root,
         client_factory=client_factory,
@@ -368,7 +368,7 @@ class ServerTest(unittest.TestCase):
     def read_index_log(self, log):
         return [json.loads(line) for line in log.read_text().splitlines()]
 
-    def test_search_refreshes_tgrep_index_first(self):
+    def test_search_runs_no_index_refresh(self):
         log = Path(self.tmp.name) / "index.log"
         srv = make_server(self.repo)
         with patch.dict(os.environ, {"FAKE_INDEX_LOG": str(log)}):
@@ -376,12 +376,9 @@ class ServerTest(unittest.TestCase):
                 srv.call_tool("codebase_search", {"pattern": "hello"})
             )
         self.assertFalse(result.is_error)
-        repo = os.path.realpath(self.repo)
-        self.assertEqual(
-            self.read_index_log(log), [["tgrep", ["index", repo], repo]]
-        )
+        self.assertFalse(log.exists())
 
-    def test_retrieval_refreshes_tgrep_and_auggie_indexes_first(self):
+    def test_retrieval_refreshes_auggie_index_first(self):
         log = Path(self.tmp.name) / "index.log"
         srv = make_server()
         with patch.dict(os.environ, {"FAKE_INDEX_LOG": str(log)}):
@@ -393,16 +390,9 @@ class ServerTest(unittest.TestCase):
             )
         self.assertFalse(result.is_error)
         repo = os.path.realpath(self.repo)
-        self.assertCountEqual(
-            self.read_index_log(log),
-            [["tgrep", ["index", repo], repo], ["auggie", ["index", repo], repo]],
+        self.assertEqual(
+            self.read_index_log(log), [["auggie", ["index", repo], repo]]
         )
-
-    def test_search_index_refresh_failure_is_tool_error(self):
-        srv = make_server(self.repo)
-        with patch.dict(os.environ, {"FAKE_INDEX_FAIL": "tgrep"}):
-            with self.assertRaisesRegex(ToolError, "tgrep index boom"):
-                self.run_async(srv.call_tool("codebase_search", {"pattern": "x"}))
 
     def test_retrieval_index_refresh_failure_is_tool_error(self):
         srv = make_server()
@@ -414,7 +404,7 @@ class ServerTest(unittest.TestCase):
     def test_missing_auggie_returns_tool_error(self):
         srv = server.create_server(
             executable=str(FAKE_PI),
-            tgrep_executable=str(FAKE_TGREP),
+            rg_executable=str(FAKE_RG),
             semantic_executable="/definitely/missing/auggie",
         )
         args = {"repository_path": str(self.repo), "query": "q"}
@@ -497,10 +487,10 @@ class ServerTest(unittest.TestCase):
                 )
             )
 
-    def test_missing_tgrep_returns_tool_error(self):
+    def test_missing_rg_returns_tool_error(self):
         srv = server.create_server(
             executable=str(FAKE_PI),
-            tgrep_executable="/definitely/missing/tgrep",
+            rg_executable="/definitely/missing/rg",
             repository_root=self.repo,
         )
         with self.assertRaises(ToolError):
@@ -906,8 +896,8 @@ class ServerTest(unittest.TestCase):
         self.addCleanup(fake_bin_dir.cleanup)
         fake_pi = Path(fake_bin_dir.name) / "pi"
         fake_pi.symlink_to(FAKE_PI)
-        fake_tgrep = Path(fake_bin_dir.name) / "tgrep"
-        fake_tgrep.symlink_to(FAKE_TGREP)
+        fake_rg = Path(fake_bin_dir.name) / "rg"
+        fake_rg.symlink_to(FAKE_RG)
         fake_auggie = Path(fake_bin_dir.name) / "auggie"
         fake_auggie.symlink_to(FAKE_AUGGIE)
         env["PATH"] = fake_bin_dir.name + os.pathsep + env.get("PATH", "")
@@ -1071,7 +1061,10 @@ class TelemetryServerTest(unittest.TestCase):
         )
 
     def assert_stage_keys(self, event):
-        for key in ("index_refresh", "runner", "processing", "total"):
+        stages = ("runner", "processing", "total")
+        if event["tool"] == "codebase_retrieval":
+            stages = ("index_refresh",) + stages
+        for key in stages:
             self.assertIn(key, event["durations_ms"])
 
     def test_retrieval_ok_emits_one_event(self):

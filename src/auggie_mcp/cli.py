@@ -1,7 +1,7 @@
 """Command-line interface for the existing retrieval and search runners.
 
 Exposes ``auggie retrieve`` and ``auggie search`` by calling ``pi_runner`` and
-``tgrep_runner`` directly. Output is JSON by default and text with ``--human``.
+``rg_runner`` directly. Output is JSON by default and text with ``--human``.
 Also registers the semantic index subcommands from ``auggie.cli`` (index, query,
 chunk, reset, reindex, clean, cache-report, delete, log, status, health, tune,
 watch). MCP registration and transport behavior are unchanged.
@@ -17,7 +17,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from auggie import cli as semantic_cli
-from auggie_mcp import pi_runner, telemetry, tgrep_runner
+from auggie_mcp import pi_runner, rg_runner, telemetry
 
 
 def _utc_now() -> datetime:
@@ -73,13 +73,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     search = subparsers.add_parser(
         "search",
-        help="Run an exact tgrep search in the invocation directory.",
+        help="Run an exact ripgrep search in the invocation directory.",
         description=(
-            "Run tgrep in the invocation directory. Remaining arguments are "
-            "forwarded to the existing tgrep flag validation."
+            "Run rg in the invocation directory. Remaining arguments are "
+            "forwarded to the existing rg flag validation."
         ),
     )
-    search.add_argument("pattern", help="Search pattern passed to tgrep.")
+    search.add_argument("pattern", help="Search pattern passed to rg.")
     search.add_argument(
         "--human",
         action="store_true",
@@ -179,7 +179,7 @@ def _run_retrieve(args, extra, *, pi_executable):
         record.finish(outcome, error)
 
 
-def _run_search(args, extra, *, tgrep_executable):
+def _run_search(args, extra, *, rg_executable):
     repository_root = os.getcwd()
     record = telemetry.CallRecord(
         "cli",
@@ -196,12 +196,12 @@ def _run_search(args, extra, *, tgrep_executable):
     try:
         with record.stage("runner"):
             result = asyncio.run(
-                tgrep_runner.run_tgrep(
+                rg_runner.run_rg(
                     repository_root,
                     args.pattern,
                     path=".",
                     flags=extra,
-                    executable=tgrep_executable,
+                    executable=rg_executable,
                 )
             )
         exit_code = result["exit_code"]
@@ -211,7 +211,7 @@ def _run_search(args, extra, *, tgrep_executable):
             stderr_bytes=len(result["stderr"].encode("utf-8")),
         )
         if exit_code not in (0, 1):
-            message = result["stderr"].strip() or f"tgrep exited with status {exit_code}"
+            message = result["stderr"].strip() or f"rg exited with status {exit_code}"
             raise RuntimeError(message)
         if exit_code == 1:
             outcome = "no_match"
@@ -348,7 +348,7 @@ def main(
     argv=None,
     *,
     pi_executable: str = "pi",
-    tgrep_executable: str = "tgrep",
+    rg_executable: str = "rg",
 ) -> int:
     """Run the ``auggie`` command line and return an exit code."""
     parser = build_parser()
@@ -370,7 +370,7 @@ def main(
             return _run_retrieve(args, extra, pi_executable=pi_executable)
         if args.command == "stats":
             return _run_stats(args, extra)
-        return _run_search(args, extra, tgrep_executable=tgrep_executable)
+        return _run_search(args, extra, rg_executable=rg_executable)
     except CliUsageError as exc:
         _emit_error(str(exc))
         return 2

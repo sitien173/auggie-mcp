@@ -1,8 +1,8 @@
-"""Incremental tgrep and auggie semantic index refresh so searches see current files."""
+"""Incremental auggie semantic index refresh so searches see current files."""
 
 import asyncio
 
-from auggie_mcp import pi_runner, tgrep_runner
+from auggie_mcp import pi_runner, rg_runner
 
 # Upper bound (characters) on stderr kept in a refresh failure message.
 _STDERR_TAIL = 2000
@@ -15,7 +15,7 @@ class IndexRefreshError(RuntimeError):
 async def refresh_index(executable, root) -> None:
     """Run ``<executable> index <root>`` in ``root`` and wait for it.
 
-    Both tgrep and the auggie semantic index update incrementally, so unchanged files are skipped.
+    The auggie semantic index updates incrementally, so unchanged files are skipped.
     Cancellation terminates the whole process group.
     """
     repo = pi_runner.validate_repository(root)
@@ -37,7 +37,7 @@ async def refresh_index(executable, root) -> None:
     try:
         _, stderr = await process.communicate()
     except asyncio.CancelledError:
-        await tgrep_runner._terminate_process_group(process)
+        await rg_runner._terminate_process_group(process)
         raise
 
     if process.returncode != 0:

@@ -6,7 +6,7 @@ The server uses the MCP Python SDK v2 (`MCPServer`) over standard input/output t
 
 ## Installation
 
-Requires Python 3.10+ and `uv`.
+Requires Python 3.12+, `uv`, and ripgrep (`rg`) on `PATH`.
 
 ```bash
 uv sync
@@ -24,12 +24,12 @@ The `auggie` command reuses the underlying runners without MCP server lifecycle 
 # Semantic retrieval (uses the Pi retrieval runner)
 uv run auggie retrieve <repository> <query>
 
-# Exact search in the current directory (uses the tgrep runner)
-uv run auggie search <pattern> [tgrep flags...]
+# Exact search in the current directory (uses the rg runner)
+uv run auggie search <pattern> [rg flags...]
 ```
 
 - `auggie retrieve <repository> <query>` runs the retrieval runner against `repository` and prints `{"response": "..."}`. With `--human` it prints the response text.
-- `auggie search <pattern>` runs tgrep in the invocation directory. Any remaining arguments are forwarded unchanged to existing tgrep flag validation. It prints the runner result object `{"stdout": ..., "stderr": ..., "exit_code": ...}`. With `--human` it prints tgrep standard output.
+- `auggie search <pattern>` runs ripgrep (`rg`) in the invocation directory. Any remaining arguments are forwarded unchanged to existing rg flag validation. It prints the runner result object `{"stdout": ..., "stderr": ..., "exit_code": ...}`. With `--human` it prints rg standard output.
 - A search with no matches is a normal result: it emits the JSON result and exits `1`.
 - Argument-validation and runner failures emit a JSON error object to standard error and exit `2`.
 
@@ -138,7 +138,7 @@ Returns a `RetrievalEnvelope`:
 
 ### `codebase_search(pattern, path=".", flags=None, goal=None)`
 
-Runs fast regex or literal search using `tgrep`. Relative paths resolve beneath the server startup repository. Absolute paths may target any accessible file or directory.
+Runs fast regex or literal search using ripgrep (`rg`). Relative paths resolve beneath the server startup repository. Absolute paths may target any accessible file or directory.
 
 - `pattern` (`string`, required): Regex or literal search pattern.
 - `path` (`string`, optional, default `.`): Repository-relative or absolute search path.
@@ -181,7 +181,7 @@ Each repository keeps its index in a `.auggie/` directory at the repository root
 - **Uncertainty Floor:** Only non-protected chunks scored with retention probability <= `0.1` may be omitted. Omitted contiguous blocks render as deterministic omission markers.
 - **Fail-Open Semantics:** Any API failure, invalid response, timeout, or missing API key fails open. The server returns exact original runner output marked `status: "unclassified"` and `retention: "failed_open"`. Jev errors never become MCP tool errors.
 - **Exit Codes:** Search exit code `1` (no matches found) remains a normal successful MCP call, not a tool error. Operational runner errors (missing executables, path escapes, invalid flags, process crashes) remain MCP tool errors.
-- **Index Refresh:** Before every call the server incrementally updates the search indexes so results reflect current files on disk. `codebase_search` runs `tgrep index` on the server startup repository. `codebase_retrieval` runs `tgrep index` and `auggie index` on `repository_path` before starting Pi. Unchanged files are skipped. A failed or missing indexer is an MCP tool error.
+- **Index Refresh:** `codebase_retrieval` runs `auggie index` on `repository_path` before starting Pi, so semantic results reflect current files on disk. Unchanged files are skipped. A failed or missing indexer is an MCP tool error. `codebase_search` needs no index because ripgrep scans files directly.
 - **Lifespan Management:** A single `AsyncTypeSafeClient` is created on server lifespan startup and shared across concurrent calls with SDK retries disabled. It closes cleanly on server shutdown alongside the bounded archive executor.
 
 ## Privacy

@@ -53,11 +53,11 @@ auggie search "run_pi" -F -l
 auggie search "" --files -g '*.py'
 ```
 
-Search forwards extra arguments to the runner's tgrep flag validation. Use `-F` for literals, `-g` for file scope, `-l` for matching filenames, and `-C` for context. Quote patterns and globs so the shell does not expand them.
+Search forwards extra arguments to the runner's rg flag validation. Use `-F` for literals, `-g` for file scope, `-l` for matching filenames, and `-C` for context. Quote patterns and globs so the shell does not expand them.
 
 Do not supply an additional positional search path or a `--repository` option. Narrow scope with `-g`. Path-valued flags such as `--file`, `--ignore-file`, and `--index-path` must resolve within the invocation directory.
 
-Do not assume every tgrep option is accepted. The runner rejects unsupported flags, including `--exclude`. Consult the current runner allowlist before using options not shown here. If indexed results miss newly created or changed files, repeat the same scoped search with `--no-index`.
+Do not assume every rg option is accepted. The runner rejects unsupported flags, including `--exclude`. Consult the current runner allowlist before using options not shown here.
 
 ## 3. Read output and handle failures
 
@@ -67,7 +67,7 @@ JSON is the default output format:
 - Search writes `{"stdout": "...", "stderr": "...", "exit_code": 0}` to standard output. Inspect both output fields.
 - Argument-validation and runner failures write `{"error": "..."}` to standard error.
 
-Add `--human` to either subcommand only when plain text is preferable. Retrieval then prints the response text; search prints only tgrep standard output. Prefer JSON when diagnostics matter.
+Add `--human` to either subcommand only when plain text is preferable. Retrieval then prints the response text; search prints only rg standard output. Prefer JSON when diagnostics matter.
 
 | Exit code | Meaning | Action |
 | --- | --- | --- |

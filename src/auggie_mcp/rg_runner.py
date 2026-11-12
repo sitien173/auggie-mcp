@@ -1,4 +1,4 @@
-"""Safe tgrep subprocess adapter for repository searches."""
+"""Safe ripgrep subprocess adapter for repository searches."""
 
 import asyncio
 import os
@@ -6,11 +6,11 @@ import signal
 from pathlib import Path
 from typing import TypedDict
 
-_TGREP_EXECUTABLE = "tgrep"
+_RG_EXECUTABLE = "rg"
 _SHUTDOWN_GRACE_SECONDS = 0.5
 
 
-class TgrepResult(TypedDict):
+class RgResult(TypedDict):
     stdout: str
     stderr: str
     exit_code: int
@@ -25,7 +25,7 @@ _NO_VALUE_FLAGS = {
     "--no-heading", "-H", "--with-filename", "-I", "--no-filename", "--json",
     "--vimgrep", "-0", "--null", "--trim", "-.", "--hidden", "--no-ignore",
     "-a", "--text", "--binary", "-u", "-uu", "-uuu", "--no-max-filesize",
-    "--no-messages", "--no-index", "--stats", "-x",
+    "--no-messages", "--stats", "-x",
     "--line-regexp", "-P", "--pcre2", "--pcre2-version", "--no-unicode",
     "--passthru", "--stop-on-nonmatch", "--column", "--no-column", "-b",
     "--byte-offset", "--max-columns-preview", "--count-matches",
@@ -42,7 +42,7 @@ _VALUE_FLAGS = {
     "-e", "--regexp", "-f", "--file", "-m", "--max-count", "-g", "--glob",
     "--iglob", "-t", "--type", "-T", "--type-not", "--type-add",
     "--type-clear", "-A", "--after-context", "-B", "--before-context", "-C",
-    "--context", "--color", "--max-filesize", "--index-path", "--engine",
+    "--context", "--color", "--max-filesize", "--engine",
     "--regex-size-limit", "--dfa-size-limit", "-r", "--replace", "-M",
     "--max-columns", "--context-separator", "--field-match-separator",
     "--field-context-separator", "--path-separator", "--sort", "--sortr", "-E",
@@ -50,7 +50,6 @@ _VALUE_FLAGS = {
 }
 
 _EXISTING_FILE_FLAGS = {"-f", "--file", "--ignore-file"}
-_PATH_FLAGS = _EXISTING_FILE_FLAGS | {"--index-path"}
 
 
 def _repository_root(repository_root) -> Path:
@@ -91,20 +90,19 @@ def resolve_search_path(repository_root, path) -> Path:
 
 
 def _validate_flag_value(root: Path, flag: str, value: str) -> str:
-    if flag not in _PATH_FLAGS:
+    if flag not in _EXISTING_FILE_FLAGS:
         return value
 
     resolved = _resolve_beneath(root, value, f"{flag} path")
-    if flag in _EXISTING_FILE_FLAGS:
-        if not resolved.exists():
-            raise ValueError(f"{flag} path does not exist: {resolved}")
-        if not resolved.is_file():
-            raise ValueError(f"{flag} path is not a file: {resolved}")
+    if not resolved.exists():
+        raise ValueError(f"{flag} path does not exist: {resolved}")
+    if not resolved.is_file():
+        raise ValueError(f"{flag} path is not a file: {resolved}")
     return str(resolved)
 
 
 def validate_flags(repository_root, flags=None) -> list[str]:
-    """Allow only documented tgrep search flags and their values."""
+    """Allow only documented rg search flags and their values."""
     root = _repository_root(repository_root)
     supplied = list(flags or [])
     validated = []
@@ -113,7 +111,7 @@ def validate_flags(repository_root, flags=None) -> list[str]:
     while index < len(supplied):
         token = supplied[index]
         if not isinstance(token, str):
-            raise ValueError("tgrep flags must be strings")
+            raise ValueError("rg flags must be strings")
 
         if token in _NO_VALUE_FLAGS:
             validated.append(token)
@@ -122,10 +120,10 @@ def validate_flags(repository_root, flags=None) -> list[str]:
 
         if token in _VALUE_FLAGS:
             if index + 1 >= len(supplied):
-                raise ValueError(f"tgrep flag requires a value: {token}")
+                raise ValueError(f"rg flag requires a value: {token}")
             value = supplied[index + 1]
             if not isinstance(value, str):
-                raise ValueError(f"tgrep flag value must be a string: {token}")
+                raise ValueError(f"rg flag value must be a string: {token}")
             validated.extend([token, _validate_flag_value(root, token, value)])
             index += 2
             continue
@@ -133,18 +131,18 @@ def validate_flags(repository_root, flags=None) -> list[str]:
         if token.startswith("--") and "=" in token:
             flag, value = token.split("=", 1)
             if flag not in _VALUE_FLAGS:
-                raise ValueError(f"unsupported tgrep flag: {flag}")
+                raise ValueError(f"unsupported rg flag: {flag}")
             validated.append(f"{flag}={_validate_flag_value(root, flag, value)}")
             index += 1
             continue
 
-        raise ValueError(f"unsupported tgrep flag or positional argument: {token}")
+        raise ValueError(f"unsupported rg flag or positional argument: {token}")
 
     return validated
 
 
-def build_tgrep_command(repository_root, pattern, path=".", flags=None) -> list[str]:
-    """Build tgrep arguments without the executable."""
+def build_rg_command(repository_root, pattern, path=".", flags=None) -> list[str]:
+    """Build rg arguments without the executable."""
     root = _repository_root(repository_root)
     search_path = resolve_search_path(root, path)
     validated_flags = validate_flags(root, flags)
@@ -174,17 +172,17 @@ async def _terminate_process_group(process):
     await process.wait()
 
 
-async def run_tgrep(
+async def run_rg(
     repository_root,
     pattern,
     path=".",
     flags=None,
     *,
-    executable=_TGREP_EXECUTABLE,
-) -> TgrepResult:
-    """Run tgrep without a shell and preserve its complete result."""
+    executable=_RG_EXECUTABLE,
+) -> RgResult:
+    """Run rg without a shell and preserve its complete result."""
     root = _repository_root(repository_root)
-    command = [executable] + build_tgrep_command(root, pattern, path, flags)
+    command = [executable] + build_rg_command(root, pattern, path, flags)
     try:
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -195,7 +193,7 @@ async def run_tgrep(
         )
     except OSError as exc:
         raise FileNotFoundError(
-            f"tgrep executable not found: {executable} ({exc})"
+            f"rg executable not found: {executable} ({exc})"
         ) from exc
 
     try:

@@ -1,4 +1,4 @@
-"""Unit tests for auggie_mcp.tgrep_runner."""
+"""Unit tests for auggie_mcp.rg_runner."""
 
 import asyncio
 import json
@@ -9,13 +9,13 @@ import time
 import unittest
 from pathlib import Path
 
-from auggie_mcp import tgrep_runner
+from auggie_mcp import rg_runner
 
 TESTS_DIR = Path(__file__).resolve().parent
-FAKE_TGREP = TESTS_DIR / "fake_tgrep.py"
+FAKE_RG = TESTS_DIR / "fake_rg.py"
 
 
-class TgrepRunnerTest(unittest.TestCase):
+class RgRunnerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -34,33 +34,33 @@ class TgrepRunnerTest(unittest.TestCase):
         return asyncio.run(coro)
 
     def test_relative_path_resolves_beneath_repository_root(self):
-        resolved = tgrep_runner.resolve_search_path(self.repo, "src")
+        resolved = rg_runner.resolve_search_path(self.repo, "src")
         self.assertEqual(resolved, self.subdir)
 
     def test_search_path_accepts_single_files(self):
-        resolved = tgrep_runner.resolve_search_path(self.repo, "src/main.py")
+        resolved = rg_runner.resolve_search_path(self.repo, "src/main.py")
         self.assertEqual(resolved, self.source)
 
     def test_absolute_search_path_accepts_path_outside_repository_root(self):
         outside = Path(self.tmp.name) / "outside"
         outside.mkdir()
 
-        resolved = tgrep_runner.resolve_search_path(self.repo, outside)
+        resolved = rg_runner.resolve_search_path(self.repo, outside)
 
         self.assertEqual(resolved, outside)
 
     def test_search_path_rejects_missing_paths_and_root_escape(self):
         with self.assertRaisesRegex(ValueError, "does not exist"):
-            tgrep_runner.resolve_search_path(self.repo, "missing")
+            rg_runner.resolve_search_path(self.repo, "missing")
         with self.assertRaisesRegex(ValueError, "escapes repository root"):
-            tgrep_runner.resolve_search_path(self.repo, "..")
+            rg_runner.resolve_search_path(self.repo, "..")
 
     def test_symlink_escape_is_rejected(self):
         outside = Path(self.tmp.name) / "outside"
         outside.mkdir()
         (self.repo / "escape").symlink_to(outside, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "escapes repository root"):
-            tgrep_runner.resolve_search_path(self.repo, "escape")
+            rg_runner.resolve_search_path(self.repo, "escape")
 
     def test_all_documented_search_flags_are_accepted(self):
         no_value_flags = [
@@ -74,7 +74,7 @@ class TgrepRunnerTest(unittest.TestCase):
             "--with-filename", "-I", "--no-filename", "--json", "--vimgrep",
             "-0", "--null", "--trim", "-.", "--hidden", "--no-ignore", "-a",
             "--text", "--binary", "-u", "-uu", "-uuu", "--no-max-filesize",
-            "--no-messages", "--no-index", "--stats", "-x",
+            "--no-messages", "--stats", "-x",
             "--line-regexp", "-P", "--pcre2", "--pcre2-version", "--no-unicode",
             "--passthru", "--stop-on-nonmatch", "--column", "--no-column", "-b",
             "--byte-offset", "--max-columns-preview", "--count-matches",
@@ -94,7 +94,7 @@ class TgrepRunnerTest(unittest.TestCase):
             "--type-add": "web:*.html", "--type-clear": "web", "-A": "2",
             "--after-context": "2", "-B": "2", "--before-context": "2", "-C": "2",
             "--context": "2", "--color": "never", "--max-filesize": "64M",
-            "--index-path": ".tgrep", "--engine": "auto",
+            "--engine": "auto",
             "--regex-size-limit": "10M", "--dfa-size-limit": "10M", "-r": "x",
             "--replace": "x", "-M": "120", "--max-columns": "120",
             "--context-separator": "--", "--field-match-separator": ":",
@@ -107,37 +107,38 @@ class TgrepRunnerTest(unittest.TestCase):
 
         for flag in no_value_flags:
             with self.subTest(flag=flag):
-                self.assertEqual(tgrep_runner.validate_flags(self.repo, [flag]), [flag])
+                self.assertEqual(rg_runner.validate_flags(self.repo, [flag]), [flag])
         for flag, value in value_flags.items():
             with self.subTest(flag=flag):
-                validated = tgrep_runner.validate_flags(self.repo, [flag, value])
+                validated = rg_runner.validate_flags(self.repo, [flag, value])
                 self.assertEqual(validated[0], flag)
                 self.assertEqual(len(validated), 2)
 
     def test_long_equals_forms_are_accepted(self):
         self.assertEqual(
-            tgrep_runner.validate_flags(self.repo, ["--glob=*.py", "--context=2"]),
+            rg_runner.validate_flags(self.repo, ["--glob=*.py", "--context=2"]),
             ["--glob=*.py", "--context=2"],
         )
 
     def test_file_valued_flags_cannot_escape_repository(self):
         outside = Path(self.tmp.name) / "outside.txt"
         outside.write_text("x")
-        for flag in ("-f", "--file", "--ignore-file", "--index-path"):
+        for flag in ("-f", "--file", "--ignore-file"):
             with self.subTest(flag=flag):
                 with self.assertRaisesRegex(ValueError, "escapes repository root"):
-                    tgrep_runner.validate_flags(self.repo, [flag, str(outside)])
+                    rg_runner.validate_flags(self.repo, [flag, str(outside)])
 
     def test_unknown_setup_and_positional_flags_are_rejected(self):
         for flags in (
-            ["--wat"], ["--exclude", "vendor"], ["-z"], ["--follow"], ["bare"]
+            ["--wat"], ["--exclude", "vendor"], ["-z"], ["--follow"], ["bare"],
+            ["--no-index"], ["--index-path", "idx"],
         ):
             with self.subTest(flags=flags):
                 with self.assertRaises(ValueError):
-                    tgrep_runner.validate_flags(self.repo, flags)
+                    rg_runner.validate_flags(self.repo, flags)
 
     def test_build_command_places_flags_before_pattern_and_path(self):
-        cmd = tgrep_runner.build_tgrep_command(
+        cmd = rg_runner.build_rg_command(
             self.repo, "hello", "src", ["-F", "-g", "*.py"]
         )
         self.assertEqual(
@@ -146,7 +147,7 @@ class TgrepRunnerTest(unittest.TestCase):
         )
 
     def test_explicit_pattern_flags_keep_the_primary_pattern(self):
-        cmd = tgrep_runner.build_tgrep_command(
+        cmd = rg_runner.build_rg_command(
             self.repo, "hello", "src", ["-e", "other"]
         )
         self.assertEqual(
@@ -158,12 +159,12 @@ class TgrepRunnerTest(unittest.TestCase):
         for pattern, expected_code in (("hello", 0), ("nomatch", 1), ("bad[", 2)):
             with self.subTest(pattern=pattern):
                 result = self.run_async(
-                    tgrep_runner.run_tgrep(
+                    rg_runner.run_rg(
                         self.repo,
                         pattern,
                         "src",
                         ["-F"],
-                        executable=str(FAKE_TGREP),
+                        executable=str(FAKE_RG),
                     )
                 )
                 self.assertEqual(result["exit_code"], expected_code)
@@ -174,26 +175,26 @@ class TgrepRunnerTest(unittest.TestCase):
         marker = Path(self.tmp.name) / "pwned"
         pattern = f"hello; touch {marker}"
         result = self.run_async(
-            tgrep_runner.run_tgrep(
+            rg_runner.run_rg(
                 self.repo,
                 pattern,
                 ".",
                 ["--replace", "$(touch nope)"],
-                executable=str(FAKE_TGREP),
+                executable=str(FAKE_RG),
             )
         )
         payload = json.loads(result["stdout"])
         self.assertIn(pattern, payload["argv"])
         self.assertFalse(marker.exists())
 
-    def test_cancellation_terminates_tgrep_process(self):
+    def test_cancellation_terminates_rg_process(self):
         async def scenario():
             task = asyncio.create_task(
-                tgrep_runner.run_tgrep(
-                    self.repo, "stall", executable=str(FAKE_TGREP)
+                rg_runner.run_rg(
+                    self.repo, "stall", executable=str(FAKE_RG)
                 )
             )
-            pid_file = self.repo / "tgrep.pid"
+            pid_file = self.repo / "rg.pid"
             deadline = time.monotonic() + 3
             while not pid_file.exists() and time.monotonic() < deadline:
                 await asyncio.sleep(0.02)
@@ -216,8 +217,8 @@ class TgrepRunnerTest(unittest.TestCase):
     def test_missing_executable_raises_file_not_found(self):
         with self.assertRaises(FileNotFoundError):
             self.run_async(
-                tgrep_runner.run_tgrep(
-                    self.repo, "hello", executable="/definitely/missing/tgrep"
+                rg_runner.run_rg(
+                    self.repo, "hello", executable="/definitely/missing/rg"
                 )
             )
 

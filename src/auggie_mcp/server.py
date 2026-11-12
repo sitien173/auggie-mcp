@@ -11,8 +11,8 @@ from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from auggie.mcp_tools import register_tools
-from auggie_mcp import pi_runner, telemetry, tgrep_runner
-from auggie_mcp.index_refresh import IndexRefreshError, refresh_index
+from auggie_mcp import pi_runner, rg_runner, telemetry
+from auggie_mcp.index_refresh import refresh_index
 from auggie_mcp.output_processing import (
     OutputProcessor,
     RetrievalEnvelope,
@@ -41,7 +41,7 @@ This MCP tool is Augment's context engine, the world's best codebase context eng
 This tool is LONG RUNNING. A single call typically takes several minutes.
 
 - Run it as a background task and wait for it to complete.
-- Do NOT explore or try to understand the codebase yourself while this tool is running. Do not read files, tgrep, or spawn search agents in the meantime.
+- Do NOT explore or try to understand the codebase yourself while this tool is running. Do not read files, grep, or spawn search agents in the meantime.
 - Do NOT call this tool again for the same question while a call is in flight.
 - Wait for the result, then act on it. The returned answer replaces the exploration you would otherwise do.
 
@@ -61,14 +61,14 @@ Use `codebase-retrieval` in the following cases:
 
 ### Bad Queries (use other tools instead)
 
-- "Find definition of constructor of class Foo" — use `tgrep` instead.
-- "Find all references to function bar" — use `tgrep` instead.
+- "Find definition of constructor of class Foo" — use `codebase_search` instead.
+- "Find all references to function bar" — use `codebase_search` instead.
 - "Show me how Checkout class is used in services/payment.py" — use file view instead.
 - "Show context of the file foo.py" — use file view instead.
 
 ## Tool Selection Rule
 
-**ALWAYS** use `codebase-retrieval` when you're unsure of exact file locations. Use `tgrep` when you want to find ALL occurrences of a known identifier across the codebase, or when searching within specific files.
+**ALWAYS** use `codebase-retrieval` when you're unsure of exact file locations. Use `codebase_search` when you want to find ALL occurrences of a known identifier across the codebase, or when searching within specific files.
 
 ## Parameters
 
@@ -117,7 +117,7 @@ class LifespanState:
 def create_server(
     *,
     executable: str = "pi",
-    tgrep_executable: str = "tgrep",
+    rg_executable: str = "rg",
     semantic_executable: str = "auggie",
     repository_root=None,
     client_factory: Callable[[], Any] | None = None,
@@ -263,10 +263,7 @@ def create_server(
         try:
             try:
                 with record.stage("index_refresh"):
-                    await asyncio.gather(
-                        refresh_index(tgrep_executable, repository_path),
-                        refresh_index(semantic_executable, repository_path),
-                    )
+                    await refresh_index(semantic_executable, repository_path)
                 with record.stage("runner"):
                     try:
                         runner_result = await pi_runner.run_pi(
@@ -335,7 +332,7 @@ def create_server(
         goal: str | None = None,
         ctx: Context = None,
     ) -> SearchEnvelope:
-        """Run tgrep at the requested search path and return the classified search envelope."""
+        """Run rg at the requested search path and return the classified search envelope."""
         record = telemetry.CallRecord(
             "mcp",
             "codebase_search",
@@ -352,15 +349,13 @@ def create_server(
         error: BaseException | None = None
         try:
             try:
-                with record.stage("index_refresh"):
-                    await refresh_index(tgrep_executable, search_root)
                 with record.stage("runner"):
-                    result = await tgrep_runner.run_tgrep(
+                    result = await rg_runner.run_rg(
                         search_root,
                         pattern,
                         path,
                         flags,
-                        executable=tgrep_executable,
+                        executable=rg_executable,
                     )
                 record.set_runner(
                     exit_code=result["exit_code"],
@@ -369,11 +364,11 @@ def create_server(
                 )
             except asyncio.CancelledError:
                 raise
-            except (ValueError, FileNotFoundError, IndexRefreshError) as exc:
+            except (ValueError, FileNotFoundError) as exc:
                 raise ToolError(str(exc)) from exc
             if result["exit_code"] not in {0, 1}:
                 message = result["stderr"] or (
-                    f"tgrep exited with status {result['exit_code']}"
+                    f"rg exited with status {result['exit_code']}"
                 )
                 raise ToolError(message)
 
