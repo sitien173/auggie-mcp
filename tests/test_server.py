@@ -670,6 +670,36 @@ class ServerTest(unittest.TestCase):
 
         self.run_async(scenario())
 
+    def test_fallback_client_closed_once_across_later_lifespan(self):
+        async def scenario():
+            clients = []
+
+            def client_factory():
+                c = FakeClientWithCounters()
+                clients.append(c)
+                return c
+
+            srv = make_server(self.repo, client_factory=client_factory)
+
+            res0 = await srv.call_tool("codebase_search", {"pattern": "hello"})
+            self.assertFalse(res0.is_error)
+            self.assertEqual(len(clients), 1)
+
+            async with srv.settings.lifespan(srv):
+                for pattern in ("hello", "nomatch"):
+                    res = await srv.call_tool("codebase_search", {"pattern": pattern})
+                    self.assertFalse(res.is_error)
+                res = await srv.call_tool(
+                    "codebase_retrieval",
+                    {"repository_path": str(self.repo), "query": "q"},
+                )
+                self.assertFalse(res.is_error)
+                self.assertEqual(len(clients), 2)
+
+            self.assertEqual([c.closed for c in clients], [1, 1])
+
+        self.run_async(scenario())
+
     def test_lifespan_closes_client_on_failure(self):
         async def scenario():
             fake_client = FakeClientWithCounters()

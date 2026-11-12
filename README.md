@@ -160,6 +160,12 @@ Returns a `SearchEnvelope`:
 - Absolute local repository paths are sanitized and never intentionally sent to TypeSafe AI.
 - No local redaction layer is applied before TypeSafe submission; sensitive strings present in command outputs may leave the local host if an API key is configured.
 
+## Accepted risks
+
+- **Writable tools.** Pi is started with no tool allowlist. Built-in tools, including `bash`, `edit`, and `write`, remain available. The bundled read-only system prompt is a behavioral control only, not a security boundary. A malicious repository or query could cause Pi to modify files or run commands.
+- **Unlimited concurrency.** Requests start immediately; there is no concurrency limit or queue. Concurrent calls may exhaust CPU, memory, or model API quota, and concurrent requests may modify the same repository.
+- **Model credentials.** Pi uses the caller's configured provider credentials.
+
 ## Telemetry
 
 The server and the `auggie` CLI record one local event for every `codebase_retrieval` and `codebase_search` call. Events stay on this machine. The telemetry code makes no network requests.

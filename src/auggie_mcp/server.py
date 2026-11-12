@@ -127,6 +127,15 @@ def create_server(
 
     @asynccontextmanager
     async def lifespan(app: MCPServer) -> AsyncIterator[LifespanState]:
+        try:
+            async with _lifespan(app) as state:
+                yield state
+        finally:
+            await _close_fallback()
+
+    @asynccontextmanager
+    async def _lifespan(app: MCPServer) -> AsyncIterator[LifespanState]:
+        await _close_fallback()
         cfg = load_config()
         if client_factory is not None:
             client = client_factory()
@@ -188,7 +197,14 @@ def create_server(
         lifespan=lifespan,
     )
 
-    fallback_holder: dict[str, OutputProcessor | None] = {"processor": None}
+    fallback_holder: dict[str, Any] = {"processor": None, "client": None}
+
+    async def _close_fallback() -> None:
+        client = fallback_holder["client"]
+        fallback_holder["processor"] = None
+        fallback_holder["client"] = None
+        if client is not None and hasattr(client, "aclose"):
+            await client.aclose()
 
     def _get_processor(ctx: Context | None = None) -> OutputProcessor:
         if ctx is not None:
@@ -220,6 +236,7 @@ def create_server(
                 cl = create_typesafe_client(cfg)
             else:
                 cl = None
+            fallback_holder["client"] = cl
 
             if processor_factory is not None:
                 fallback_holder["processor"] = processor_factory(cl)
