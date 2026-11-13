@@ -20,7 +20,7 @@ dependencies = [
     "tqdm==4.68.3",
     "tree-sitter==0.25.2",
     "voyageai==0.4.1",
-    "watchdog==6.0.0",
+    "watchdog==7.1.0",
     "coding-agent-cli==0.1.0",
 ]
 
