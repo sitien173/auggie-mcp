@@ -181,3 +181,6 @@ pyrightconfig.json
 
 # auggie semantic index
 .auggie/
+
+# Agent planning records (local only)
+docs/plans/
