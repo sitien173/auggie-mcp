@@ -2,6 +2,8 @@
   "mcpServers": {
     "auggie": {
       "command": "uvx",
+      "timeout": 600,
+      "description": "Semantic codebase retrieval and exact repository search",
       "args": ["--from", "git+https://github.com/sitien173/auggie-mcp", "auggie-mcp"],
       "env_vars": ["VOYAGE_API_KEY", "TYPESAFE_API_KEY"]
     }
