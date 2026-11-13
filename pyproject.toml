@@ -15,7 +15,7 @@ dependencies = [
     "mcp>=2.3,<3",
     "typesafe-sdk",
     "lancedb==0.33.0",
-    "numpy==2.5.0",
+    "numpy==2.5.4",
     "pyarrow==24.0.0",
     "tqdm==4.68.3",
     "tree-sitter==0.25.2",
