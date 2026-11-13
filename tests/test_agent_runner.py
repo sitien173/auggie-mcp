@@ -39,10 +39,10 @@ class LoadConfigTest(unittest.TestCase):
 
     def test_defaults_without_file_or_env(self):
         config = self.load()
-        self.assertEqual(config.driver, "pi")
-        self.assertEqual(config.model, "gpt-6-luna")
-        self.assertEqual(config.reasoning, "high")
-        self.assertIn("--approve", config.args)
+        self.assertIsNone(config.driver)
+        self.assertIsNone(config.model)
+        self.assertIsNone(config.reasoning)
+        self.assertEqual(config.args, ())
         self.assertIsNone(config.executable)
         self.assertEqual(config.timeout_s, agent_runner.TIMEOUT_SECONDS)
 
@@ -54,7 +54,7 @@ class LoadConfigTest(unittest.TestCase):
         self.assertEqual(config.model, "m1")
         self.assertEqual(config.args, ("--x",))
         self.assertEqual(config.timeout_s, 5.0)
-        self.assertEqual(config.reasoning, "high")
+        self.assertIsNone(config.reasoning)
 
     def test_env_overrides_file(self):
         self.path.write_text('[agent]\nmodel = "m1"\n')
@@ -97,7 +97,7 @@ class RunAgentTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.repo = Path(self.tmp.name)
         self.config = agent_runner.load_config(
-            env={}, path=self.repo / "missing.toml"
+            env={"AUGGIE_AGENT_DRIVER": "pi"}, path=self.repo / "missing.toml"
         )
 
         patcher = patch.object(
@@ -125,6 +125,10 @@ class RunAgentTest(unittest.TestCase):
         config = agent_runner.AgentConfig(driver="nope")
         with self.assertRaises(ValueError):
             self.run_agent(config=config)
+
+    def test_missing_driver_raises_value_error(self):
+        with self.assertRaisesRegex(ValueError, "no agent driver configured"):
+            self.run_agent(config=agent_runner.AgentConfig())
 
     def test_nested_call_is_refused_before_spawn(self):
         with (
@@ -161,7 +165,7 @@ class RagPromptTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.repo = Path(os.path.realpath(self.tmp.name))
         self.config = agent_runner.load_config(
-            env={}, path=self.repo / "missing.toml"
+            env={"AUGGIE_AGENT_DRIVER": "pi"}, path=self.repo / "missing.toml"
         )
         self.requests = []
 

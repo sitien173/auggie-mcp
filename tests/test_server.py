@@ -45,7 +45,9 @@ def setUpModule():
     _TELEMETRY_TMP = tempfile.mkdtemp()
     os.environ["AUGGIE_TELEMETRY_DIR"] = _TELEMETRY_TMP
     # Keep the user's ~/.auggie/config.toml from selecting a real agent driver.
-    _HOME_PATCH = patch.dict(os.environ, {"HOME": _TELEMETRY_TMP})
+    _HOME_PATCH = patch.dict(
+        os.environ, {"HOME": _TELEMETRY_TMP, "AUGGIE_AGENT_DRIVER": "pi"}
+    )
     _HOME_PATCH.start()
 
 

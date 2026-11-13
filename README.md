@@ -109,14 +109,14 @@ or with the module entry point:
 
 ### Agent CLI configuration
 
-`codebase_retrieval` and `auggie retrieve` run an agent CLI through the [`coding-agent-cli`](https://pypi.org/project/coding-agent-cli/) package. Built-in drivers are `pi`, `claude`, `codex`, and `agy`. Each setting resolves from the `AUGGIE_AGENT_*` environment variable, then the `[agent]` table in `~/.auggie/config.toml`, then the default.
+`codebase_retrieval` and `auggie retrieve` run an agent CLI through the [`coding-agent-cli`](https://pypi.org/project/coding-agent-cli/) package. Built-in drivers are `pi`, `claude`, `codex`, and `agy`. Each setting resolves from the `AUGGIE_AGENT_*` environment variable, then the `[agent]` table in `~/.auggie/config.toml`, then the default. `driver` has no default and must be set.
 
 | Key | Environment variable | Default |
 |---|---|---|
-| `driver` | `AUGGIE_AGENT_DRIVER` | `pi` |
-| `model` | `AUGGIE_AGENT_MODEL` | `gpt-6-luna` for `pi`, unset otherwise |
-| `reasoning` | `AUGGIE_AGENT_REASONING` | `high` for `pi`, unset otherwise |
-| `args` | `AUGGIE_AGENT_ARGS`, split with shell quoting rules | `--approve --no-session --no-extensions --no-skills --no-prompt-templates` for `pi`, empty otherwise |
+| `driver` | `AUGGIE_AGENT_DRIVER` | none, required |
+| `model` | `AUGGIE_AGENT_MODEL` | unset |
+| `reasoning` | `AUGGIE_AGENT_REASONING` | unset |
+| `args` | `AUGGIE_AGENT_ARGS`, split with shell quoting rules | empty |
 | `executable` | `AUGGIE_AGENT_EXECUTABLE` | the driver's CLI on `PATH` |
 | `timeout_s` | `AUGGIE_AGENT_TIMEOUT_S` | `1800` |
 
