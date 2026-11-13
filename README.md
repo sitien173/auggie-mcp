@@ -195,6 +195,25 @@ args = ["--permission-mode", "bypassPermissions"]
 
 The agent receives one prompt: a fixed system prompt, an optional `## Index hints` section built from an existing semantic index, and the unchanged query last under `## Question`. The library adds no permission or approval flags. Pass them through `args` when the agent needs unattended tool use.
 
+## Plugin install
+
+The plugin packages the stdio server and the `auggie-retrieval` and `auggie-cli` skills. Run these commands from a clone of this repository.
+
+Prerequisite: `uv tool install .` puts `auggie-mcp` on PATH. The plugin launches that bare command.
+
+Keep `VOYAGE_API_KEY` and `TYPESAFE_API_KEY` in the environment. No plugin file stores a value.
+
+| CLI | Install command |
+|---|---|
+| Claude Code | `claude plugin marketplace add . && claude plugin install auggie-mcp@auggie-mcp` |
+| Codex | `codex plugin marketplace add . && codex plugin add auggie-mcp@auggie-mcp` |
+| agy | `agy plugin install ./plugin` |
+| pi | `pi install .` (add `-l` for project-local) |
+
+Only manifest validation and `pi install` were run during development. The Claude Code, Codex, and agy install commands come from each CLI's help output and were not run end to end. Pi's built-in MCP client fails to start a server whose `env` references an unset `${VAR}`, so the pi extension registers the server without `env` and relies on inherited variables.
+
+Known limitation for pi: `pi mcp list` reports `Unsupported protocol version. Supported versions: 2026-07-28` for this server. The server accepts only that MCP protocol version, and pi's client does not negotiate it. The pi package installs, but pi cannot connect until one side changes.
+
 ## Tools
 
 The server registers four tools. `index_status` and `index_update` manage the semantic index that `codebase_search` reads in `semantic` mode.

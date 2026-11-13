@@ -1,0 +1,14 @@
+{
+  "name": "auggie-mcp",
+  "version": "0.5.0",
+  "description": "Agent-based codebase retrieval and semantic search over MCP.",
+  "private": true,
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./plugin/pi/extensions"],
+    "skills": ["./plugin/skills"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

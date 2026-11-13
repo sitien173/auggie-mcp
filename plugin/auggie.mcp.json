@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "auggie": {
+      "command": "auggie-mcp",
+      "args": [],
+      "env_vars": ["VOYAGE_API_KEY", "TYPESAFE_API_KEY"]
+    }
+  }
+}
