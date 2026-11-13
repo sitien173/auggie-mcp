@@ -14,7 +14,7 @@ uv sync
 
 Dependencies including `mcp` and `typesafe-sdk` install automatically with no manual HTTP client or transport configuration required.
 
-The `auggie-mcp` console command and `python -m auggie_mcp` both start the stdio server. The separate `auggie` console command exposes the retrieval and search runners and the in-tree semantic index commands on the command line.
+The `auggie-mcp` console command and `python -m auggie_mcp` both start the stdio server. The server speaks MCP protocol `2026-07-28` only, so clients must support `server/discover`; a client that opens with `initialize` receives error `-32022`. The separate `auggie` console command exposes the retrieval and search runners and the in-tree semantic index commands on the command line.
 
 ## CLI
 

@@ -877,7 +877,7 @@ class ServerTest(unittest.TestCase):
 
         with open("pyproject.toml", "rb") as fh:
             data = tomllib.load(fh)
-        self.assertIn("mcp>=2,<3", data["project"]["dependencies"])
+        self.assertIn("mcp>=2.3,<3", data["project"]["dependencies"])
 
     def test_no_production_pi_environment_switches(self):
         self.assertFalse(hasattr(server, "PI_EXECUTABLE"))
@@ -892,8 +892,8 @@ class ServerTest(unittest.TestCase):
 
     # ---- 9. Contract test with fake agent CLI over stdio ---------------------
 
-    def test_contract_stdio_discovery_and_call(self):
-        """Start the real server over stdio and speak minimal JSON-RPC."""
+    def start_stdio_server(self):
+        """Start the real server over stdio; return a JSON-RPC request function."""
         env = dict(os.environ)
         fake_bin_dir = tempfile.TemporaryDirectory()
         self.addCleanup(fake_bin_dir.cleanup)
@@ -920,114 +920,140 @@ class ServerTest(unittest.TestCase):
             line = proc.stdout.readline()
             return json.loads(line)
 
-        try:
-            # 1. initialize
-            resp = request(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2025-06-18",
-                        "capabilities": {},
-                        "clientInfo": {"name": "test", "version": "0"},
-                    },
-                }
-            )
-            self.assertIn("result", resp)
-            self.assertEqual(resp["result"]["serverInfo"]["version"], "0.5.0")
-
-            # 2. notifications/initialized
-            proc.stdin.write(
-                (
-                    json.dumps(
-                        {"jsonrpc": "2.0", "method": "notifications/initialized"}
-                    )
-                    + "\n"
-                ).encode()
-            )
-            proc.stdin.flush()
-
-            # 3. tools/list
-            resp = request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-            tools = resp["result"]["tools"]
-            names = [t["name"] for t in tools]
-            self.assertEqual(
-                names,
-                [
-                    "codebase_retrieval",
-                    "codebase_search",
-                    "index_status",
-                    "index_update",
-                ],
-            )
-
-            r_tool = next(t for t in tools if t["name"] == "codebase_retrieval")
-            s_tool = next(t for t in tools if t["name"] == "codebase_search")
-
-            self.assertIn("goal", r_tool["inputSchema"]["properties"])
-            self.assertIn("goal", s_tool["inputSchema"]["properties"])
-            self.assertEqual(
-                set(r_tool["outputSchema"]["properties"]),
-                {"tool", "data", "processing"},
-            )
-            self.assertEqual(
-                set(s_tool["outputSchema"]["properties"]),
-                {"tool", "data", "processing"},
-            )
-
-            # 4. tools/call: codebase_retrieval
-            resp = request(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 3,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "codebase_retrieval",
-                        "arguments": {
-                            "repository_path": str(self.repo),
-                            "query": "what is here?",
-                        },
-                    },
-                }
-            )
-            self.assertFalse(resp["result"]["isError"])
-            sc_r = resp["result"]["structuredContent"]
-            self.assertEqual(sc_r["tool"], "codebase_retrieval")
-            self.assertEqual(sc_r["data"]["result"], "Fake final answer.")
-            self.assertIn("processing", sc_r)
-            self.assertEqual(sc_r["processing"]["status"], "unclassified")
-            self.assertEqual(sc_r["processing"]["retention"], "failed_open")
-
-            # 5. tools/call: codebase_search
-            resp = request(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 4,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "codebase_search",
-                        "arguments": {
-                            "query": "hello",
-                        },
-                    },
-                }
-            )
-            self.assertFalse(resp["result"]["isError"])
-            sc_s = resp["result"]["structuredContent"]
-            self.assertEqual(sc_s["tool"], "codebase_search")
-            self.assertEqual(sc_s["data"]["exit_code"], 0)
-            self.assertIn("processing", sc_s)
-            self.assertEqual(sc_s["processing"]["status"], "unclassified")
-            self.assertEqual(sc_s["processing"]["retention"], "failed_open")
-
-        finally:
+        def stop():
             proc.stdin.close()
             if proc.poll() is None:
                 proc.kill()
             proc.wait()
             proc.stdout.close()
             proc.stderr.close()
+
+        self.addCleanup(stop)
+        return request
+
+    def test_stdio_initialize_is_refused(self):
+        request = self.start_stdio_server()
+        resp = request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0"},
+                },
+            }
+        )
+        self.assertEqual(resp["error"]["code"], -32022)
+        self.assertEqual(resp["error"]["data"]["supported"], ["2026-07-28"])
+        self.assertEqual(resp["error"]["data"]["requested"], "2025-06-18")
+
+    def test_contract_stdio_discovery_and_call(self):
+        """Start the real server over stdio and speak minimal JSON-RPC."""
+        request = self.start_stdio_server()
+        meta = {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "0"},
+            "io.modelcontextprotocol/clientCapabilities": {},
+        }
+
+        # 1. server/discover at 2026-07-28
+        resp = request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "server/discover",
+                "params": {"_meta": meta},
+            }
+        )
+        self.assertIn("result", resp)
+        self.assertEqual(
+            resp["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["version"],
+            "0.5.0",
+        )
+
+        # 2. tools/list
+        resp = request(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {"_meta": meta},
+            }
+        )
+        tools = resp["result"]["tools"]
+        names = [t["name"] for t in tools]
+        self.assertEqual(
+            names,
+            [
+                "codebase_retrieval",
+                "codebase_search",
+                "index_status",
+                "index_update",
+            ],
+        )
+
+        r_tool = next(t for t in tools if t["name"] == "codebase_retrieval")
+        s_tool = next(t for t in tools if t["name"] == "codebase_search")
+
+        self.assertIn("goal", r_tool["inputSchema"]["properties"])
+        self.assertIn("goal", s_tool["inputSchema"]["properties"])
+        self.assertEqual(
+            set(r_tool["outputSchema"]["properties"]),
+            {"tool", "data", "processing"},
+        )
+        self.assertEqual(
+            set(s_tool["outputSchema"]["properties"]),
+            {"tool", "data", "processing"},
+        )
+
+        # 3. tools/call: codebase_retrieval
+        resp = request(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "_meta": meta,
+                    "name": "codebase_retrieval",
+                    "arguments": {
+                        "repository_path": str(self.repo),
+                        "query": "what is here?",
+                    },
+                },
+            }
+        )
+        self.assertFalse(resp["result"]["isError"])
+        sc_r = resp["result"]["structuredContent"]
+        self.assertEqual(sc_r["tool"], "codebase_retrieval")
+        self.assertEqual(sc_r["data"]["result"], "Fake final answer.")
+        self.assertIn("processing", sc_r)
+        self.assertEqual(sc_r["processing"]["status"], "unclassified")
+        self.assertEqual(sc_r["processing"]["retention"], "failed_open")
+
+        # 4. tools/call: codebase_search
+        resp = request(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "_meta": meta,
+                    "name": "codebase_search",
+                    "arguments": {
+                        "query": "hello",
+                    },
+                },
+            }
+        )
+        self.assertFalse(resp["result"]["isError"])
+        sc_s = resp["result"]["structuredContent"]
+        self.assertEqual(sc_s["tool"], "codebase_search")
+        self.assertEqual(sc_s["data"]["exit_code"], 0)
+        self.assertIn("processing", sc_s)
+        self.assertEqual(sc_s["processing"]["status"], "unclassified")
+        self.assertEqual(sc_s["processing"]["retention"], "failed_open")
 
 
 class TelemetryServerTest(unittest.TestCase):

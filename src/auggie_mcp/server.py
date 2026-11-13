@@ -6,10 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Literal, Sequence
 
-from mcp.server import MCPServer
+from mcp import MCPError
+from mcp.server import CacheHint, MCPServer
+from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import ToolAnnotations
+from mcp.types import UNSUPPORTED_PROTOCOL_VERSION, ToolAnnotations
+from mcp.types.version import MODERN_PROTOCOL_VERSIONS
 
 from auggie_mcp import agent_runner, index_tools, rg_runner, semantic_search, telemetry
 from auggie_mcp.output_processing import (
@@ -119,6 +122,23 @@ class LifespanState:
         raise KeyError(key)
 
 
+async def _refuse_initialize(
+    ctx: ServerRequestContext[Any, Any], call_next: CallNext
+) -> HandlerResult:
+    """Reject the legacy initialize handshake; pass everything else through."""
+    if ctx.method == "initialize" and ctx.request_id is not None:
+        supported = list(MODERN_PROTOCOL_VERSIONS)
+        raise MCPError(
+            code=UNSUPPORTED_PROTOCOL_VERSION,
+            message=f"Unsupported protocol version. Supported versions: {', '.join(supported)}",
+            data={
+                "supported": supported,
+                "requested": (ctx.params or {}).get("protocolVersion") or None,
+            },
+        )
+    return await call_next(ctx)
+
+
 def create_server(
     *,
     executable: str | None = None,
@@ -193,6 +213,9 @@ def create_server(
         version="0.5.0",
         instructions=_INSTRUCTIONS,
         lifespan=lifespan,
+        middleware=[_refuse_initialize],
+        cache_hints={"tools/list": CacheHint(ttl_ms=3_600_000, scope="private")},
+        subscriptions=False,
     )
 
     def _lifespan_processor(ctx: Context | None = None) -> OutputProcessor | None:
@@ -318,7 +341,9 @@ def create_server(
             raise
         except Exception as exc:
             error = exc
-            raise
+            if isinstance(exc, ToolError):
+                raise
+            raise ToolError(str(exc) or exc.__class__.__name__) from exc
         finally:
             record.finish(outcome, error)
 
@@ -423,7 +448,9 @@ def create_server(
             raise
         except Exception as exc:
             error = exc
-            raise
+            if isinstance(exc, ToolError):
+                raise
+            raise ToolError(str(exc) or exc.__class__.__name__) from exc
         finally:
             record.finish(outcome, error)
 
@@ -465,7 +492,9 @@ def create_server(
             raise
         except Exception as exc:
             error = exc
-            raise
+            if isinstance(exc, ToolError):
+                raise
+            raise ToolError(str(exc) or exc.__class__.__name__) from exc
         finally:
             record.finish(outcome, error)
 
@@ -515,7 +544,9 @@ def create_server(
             raise
         except Exception as exc:
             error = exc
-            raise
+            if isinstance(exc, ToolError):
+                raise
+            raise ToolError(str(exc) or exc.__class__.__name__) from exc
         finally:
             record.finish(outcome, error)
 
