@@ -18,7 +18,7 @@ dependencies = [
     "numpy==2.5.4",
     "pyarrow==24.0.0",
     "tqdm==4.68.3",
-    "tree-sitter==0.25.2",
+    "tree-sitter==0.26.1",
     "voyageai==0.4.1",
     "watchdog==7.1.0",
     "coding-agent-cli==0.1.0",
