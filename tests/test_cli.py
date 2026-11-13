@@ -111,15 +111,15 @@ class CliParserTest(unittest.TestCase):
         with open("pyproject.toml", "rb") as fh:
             data = tomllib.load(fh)
         scripts = data["project"]["scripts"]
-        self.assertEqual(scripts["auggie"], "auggie_mcp.cli:main")
+        self.assertEqual(scripts["auggie"], "auggie_mcp.launch:cli")
 
-    def test_auggie_mcp_console_script_is_unchanged(self):
+    def test_auggie_mcp_console_script_uses_launcher(self):
         import tomllib
 
         with open("pyproject.toml", "rb") as fh:
             data = tomllib.load(fh)
         scripts = data["project"]["scripts"]
-        self.assertEqual(scripts["auggie-mcp"], "auggie_mcp.server:run")
+        self.assertEqual(scripts["auggie-mcp"], "auggie_mcp.launch:server")
 
 
 class CliMainTest(unittest.TestCase):

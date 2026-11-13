@@ -107,6 +107,73 @@ or with the module entry point:
 - `AUGGIE_VOYAGE_CHARS_PER_TOKEN`: Characters-per-token ratio used to estimate tokens when batching Voyage requests.
 - `AUGGIE_WATCH_DEBOUNCE_MS`: Debounce delay for `auggie watch`.
 
+### Configuration file
+
+Settings can live in `~/.auggie/config.toml`, grouped in sections. The `auggie` and `auggie-mcp` console scripts and `python -m auggie_mcp` read the file at startup, before any search code loads. After upgrading, reinstall so the console scripts use the launcher: run `uv sync` or reinstall the tool.
+
+| Section | Key | Environment variable | Type |
+|---|---|---|---|
+| `search` | `mode` | `AUGGIE_SEARCH_MODE` | string |
+| `search` | `fusion_method` | `AUGGIE_FUSION_METHOD` | string |
+| `search` | `hybrid_alpha` | `AUGGIE_HYBRID_ALPHA` | float |
+| `search` | `rrf_k` | `AUGGIE_RRF_K` | integer |
+| `search` | `ann_overfetch` | `AUGGIE_ANN_OVERFETCH` | integer |
+| `confidence` | `mode` | `AUGGIE_CONFIDENCE_MODE` | string |
+| `confidence` | `absolute_high` | `AUGGIE_CONFIDENCE_HIGH` | float |
+| `confidence` | `absolute_medium` | `AUGGIE_CONFIDENCE_MEDIUM` | float |
+| `confidence` | `absolute_low` | `AUGGIE_CONFIDENCE_LOW` | float |
+| `confidence` | `relative_high` | `AUGGIE_RELATIVE_HIGH` | float |
+| `confidence` | `relative_medium` | `AUGGIE_RELATIVE_MEDIUM` | float |
+| `confidence` | `relative_low` | `AUGGIE_RELATIVE_LOW` | float |
+| `confidence` | `quality_strong` | `AUGGIE_ABSOLUTE_STRONG` | float |
+| `confidence` | `quality_expected` | `AUGGIE_ABSOLUTE_EXPECTED` | float |
+| `confidence` | `quality_weak` | `AUGGIE_ABSOLUTE_WEAK` | float |
+| `embedding` | `model` | `AUGGIE_MODEL` | string |
+| `embedding` | `dimensions` | `AUGGIE_DIMENSIONS` | integer |
+| `embedding` | `batch_size` | `AUGGIE_BATCH_SIZE` | integer |
+| `voyage` | `timeout_s` | `AUGGIE_VOYAGE_TIMEOUT` | float |
+| `voyage` | `retries` | `AUGGIE_VOYAGE_RETRIES` | integer |
+| `voyage` | `chars_per_token` | `AUGGIE_VOYAGE_CHARS_PER_TOKEN` | float |
+| `chunking` | `lines` | `AUGGIE_CHUNK_LINES` | integer |
+| `chunking` | `overlap_lines` | `AUGGIE_OVERLAP_LINES` | integer |
+| `rerank` | `model` | `AUGGIE_RERANK_MODEL` | string |
+| `rerank` | `top_n` | `AUGGIE_RERANK_TOPN` | integer |
+| `cache` | `enabled` | `AUGGIE_CACHE_DISABLED` | boolean |
+| `cache` | `l1_ttl_s` | `AUGGIE_CACHE_L1_TTL` | integer |
+| `cache` | `l1_max_entries` | `AUGGIE_CACHE_L1_MAX` | integer |
+| `cache` | `l2_max_entries` | `AUGGIE_CACHE_L2_MAX` | integer |
+| `cache` | `l3_max_entries` | `AUGGIE_CACHE_L3_MAX` | integer |
+| `watch` | `debounce_ms` | `AUGGIE_WATCH_DEBOUNCE_MS` | integer |
+| `index` | `timeout_s` | `AUGGIE_INDEX_TIMEOUT_S` | float |
+| `jev` | `model` | `AUGGIE_JEV_MODEL` | string |
+| `jev` | `timeout_s` | `AUGGIE_JEV_TIMEOUT_SECONDS` | float |
+| `jev` | `max_requests` | `AUGGIE_JEV_MAX_REQUESTS` | integer |
+| `jev` | `archive_dir` | `AUGGIE_JEV_ARCHIVE_DIR` | path |
+| `telemetry` | `enabled` | `AUGGIE_TELEMETRY` | boolean |
+| `telemetry` | `dir` | `AUGGIE_TELEMETRY_DIR` | path |
+| `telemetry` | `retention_days` | `AUGGIE_TELEMETRY_RETENTION_DAYS` | integer |
+
+```toml
+[search]
+mode = "hybrid"
+rrf_k = 60
+
+[cache]
+enabled = true
+
+[telemetry]
+enabled = false
+dir = "~/.cache/auggie-mcp/telemetry"
+```
+
+- **Precedence:** a non-empty environment variable wins, then the file value, then the built-in default. An empty environment variable counts as unset.
+- **`cache.enabled`:** `false` sets `AUGGIE_CACHE_DISABLED=1`. `true` writes nothing. A non-empty `AUGGIE_CACHE_DISABLED` already in the environment still disables the cache.
+- **`telemetry.enabled`:** the file value is used only when `AUGGIE_TELEMETRY` is unset or empty. Then `true` sets `AUGGIE_TELEMETRY=1` and `false` sets `AUGGIE_TELEMETRY=0`.
+- **Errors:** an unknown section or key, a value of the wrong type, or invalid TOML stops startup. The launcher prints `auggie: <message>` to stderr and exits with code 2.
+- **Secrets:** API keys such as `VOYAGE_API_KEY` and `TYPESAFE_API_KEY` stay in the environment. Do not put them in the file.
+- **`auggie tune --save`:** it still writes `AUGGIE_CHUNK_LINES` to a `.env` file, not to `config.toml`.
+- **`[agent]`:** it remains as documented under Agent CLI configuration.
+
 ### Agent CLI configuration
 
 `codebase_retrieval` and `auggie retrieve` run an agent CLI through the [`coding-agent-cli`](https://pypi.org/project/coding-agent-cli/) package. Built-in drivers are `pi`, `claude`, `codex`, and `agy`. Each setting resolves from the `AUGGIE_AGENT_*` environment variable, then the `[agent]` table in `~/.auggie/config.toml`, then the default. `driver` has no default and must be set.

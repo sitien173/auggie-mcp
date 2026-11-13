@@ -870,7 +870,7 @@ class ServerTest(unittest.TestCase):
             data = tomllib.load(fh)
         scripts = data["project"]["scripts"]
         self.assertIn("auggie-mcp", scripts)
-        self.assertTrue(scripts["auggie-mcp"].startswith("auggie_mcp.server:"))
+        self.assertTrue(scripts["auggie-mcp"].startswith("auggie_mcp.launch:"))
 
     def test_dependency_stays_on_mcp_v2(self):
         import tomllib
