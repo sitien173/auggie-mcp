@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "auggie": {
-      "command": "auggie-mcp",
-      "args": [],
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/sitien173/auggie-mcp", "auggie-mcp"],
       "env_vars": ["VOYAGE_API_KEY", "TYPESAFE_API_KEY"]
     }
   }

@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "auggie": {
-      "command": "auggie-mcp",
-      "args": []
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/sitien173/auggie-mcp", "auggie-mcp"]
     }
   }
 }

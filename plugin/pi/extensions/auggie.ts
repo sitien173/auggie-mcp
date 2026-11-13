@@ -2,5 +2,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function auggie(pi: ExtensionAPI) {
-  pi.registerMcpServer("auggie", { command: "auggie-mcp", args: [] });
+  pi.registerMcpServer("auggie", { command: "uvx", args: ["--from", "git+https://github.com/sitien173/auggie-mcp", "auggie-mcp"] });
 }

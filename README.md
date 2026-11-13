@@ -199,7 +199,7 @@ The agent receives one prompt: a fixed system prompt, an optional `## Index hint
 
 The plugin packages the stdio server and the `auggie-retrieval` and `auggie-cli` skills. Run these commands from a clone of this repository.
 
-Prerequisite: `uv tool install .` puts `auggie-mcp` on PATH. The plugin launches that bare command.
+Prerequisite: `uv` on PATH. The plugin launches `uvx --from git+https://github.com/sitien173/auggie-mcp auggie-mcp`, which fetches the server from GitHub on first start and caches it. Run `uvx --refresh --from git+https://github.com/sitien173/auggie-mcp auggie-mcp --help` to pick up new commits.
 
 Keep `VOYAGE_API_KEY` and `TYPESAFE_API_KEY` in the environment. No plugin file stores a value.
 
