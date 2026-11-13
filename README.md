@@ -100,7 +100,7 @@ or with the module entry point:
 - `AUGGIE_CONFIDENCE_MODE`, `AUGGIE_CONFIDENCE_HIGH`, `AUGGIE_CONFIDENCE_MEDIUM`, `AUGGIE_CONFIDENCE_LOW`, `AUGGIE_RELATIVE_HIGH`, `AUGGIE_RELATIVE_MEDIUM`, `AUGGIE_RELATIVE_LOW`, `AUGGIE_ABSOLUTE_STRONG`, `AUGGIE_ABSOLUTE_EXPECTED`, `AUGGIE_ABSOLUTE_WEAK`: Confidence labelling thresholds.
 - `AUGGIE_CACHE_DISABLED`: Set to `1` to bypass all query caches.
 - `AUGGIE_CACHE_L1_MAX`, `AUGGIE_CACHE_L1_TTL`, `AUGGIE_CACHE_L2_MAX`, `AUGGIE_CACHE_L3_MAX`: Query cache sizes and time to live.
-- `AUGGIE_VOYAGE_TIMEOUT`, `AUGGIE_VOYAGE_RETRIES`: Voyage request timeout and retry count.
+- `AUGGIE_VOYAGE_TIMEOUT`, `AUGGIE_VOYAGE_RETRIES`: Voyage request timeout and max attempts per request, including the first. Default attempts: 5 for embeddings.
 - `AUGGIE_CHUNK_LINES`, `AUGGIE_OVERLAP_LINES`: Lines per chunk and overlap lines between chunks. `auggie tune` can save the optimal chunk size as `AUGGIE_CHUNK_LINES` in a `.env` file.
 - `AUGGIE_AST_CHUNKING`: Set to `1`, `true`, `yes`, or `on` to enable AST chunking.
 - `AUGGIE_BATCH_SIZE`: Maximum texts per Voyage request.

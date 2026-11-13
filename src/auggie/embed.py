@@ -9,7 +9,7 @@ Environment variables:
     AUGGIE_BATCH_SIZE: Override max texts per Voyage request.
     VOYAGE_API_KEY: Required for Voyage API access.
     AUGGIE_VOYAGE_TIMEOUT: Timeout in seconds.
-    AUGGIE_VOYAGE_RETRIES: Max retries.
+    AUGGIE_VOYAGE_RETRIES: Max attempts per request, including the first.
     AUGGIE_VOYAGE_CHARS_PER_TOKEN: Token estimation ratio.
 """
 
@@ -18,6 +18,7 @@ from __future__ import annotations
 import array
 import math
 import os
+import random
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -32,10 +33,15 @@ ENV_VOYAGE_RETRIES = "AUGGIE_VOYAGE_RETRIES"
 ENV_VOYAGE_CHARS_PER_TOKEN = "AUGGIE_VOYAGE_CHARS_PER_TOKEN"
 
 DEFAULT_VOYAGE_TIMEOUT = 120.0
-DEFAULT_VOYAGE_RETRIES = 2
+DEFAULT_VOYAGE_RETRIES = 5
 DEFAULT_VOYAGE_CHARS_PER_TOKEN = 1.0
 VOYAGE_BATCH_TOKEN_LIMIT = 120000
 VOYAGE_CONCURRENCY = 4
+# voyageai retries 429, 502-504, and timeouts itself, but not these.
+# Matched by name because voyageai is imported lazily.
+VOYAGE_EXTRA_RETRY_ERRORS = {"APIConnectionError", "ServerError"}
+
+_sleep = time.sleep
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:
@@ -105,12 +111,24 @@ def _create_voyage_batches(
     return batches
 
 
+def _embed_with_retry(client: Any, kwargs: dict[str, Any], max_attempts: int) -> Any:
+    """Call client.embed, retrying errors the voyageai client does not retry."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return client.embed(**kwargs)
+        except Exception as e:
+            if type(e).__name__ not in VOYAGE_EXTRA_RETRY_ERRORS or attempt >= max_attempts:
+                raise
+            _sleep(min(2 ** (attempt - 1), 16) + random.random())
+
+
 def _embed_voyage(
     client: Any,
     texts: list[str],
     model: str,
     input_type: str,
     output_dimension: int | None,
+    max_attempts: int,
 ) -> tuple[list[bytes], int]:
     """Embed texts using a Voyage client."""
     kwargs = {
@@ -123,7 +141,7 @@ def _embed_voyage(
 
     start_time = time.time()
     try:
-        result = client.embed(**kwargs)
+        result = _embed_with_retry(client, kwargs, max_attempts)
     except Exception as e:
         error_msg = str(e)
         if "tokens" in error_msg.lower() and "batch" in error_msg.lower():
@@ -208,7 +226,7 @@ def _embed_voyage_batched(
     )
 
     def embed_batch(batch: list[str]) -> tuple[list[bytes], int]:
-        return _embed_voyage(client, batch, model, input_type, dimensions)
+        return _embed_voyage(client, batch, model, input_type, dimensions, max_retries)
 
     if len(batches) == 1:
         results = [embed_batch(batches[0])]
