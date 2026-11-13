@@ -30,7 +30,7 @@ This tool is LONG RUNNING. A single call typically takes several minutes.
 - Do NOT explore the codebase yourself while it runs. Do not read files, grep, or spawn search agents in the meantime.
 - Do NOT call it again for the same question while a call is in flight.
 - The agent can edit files, so this tool is not read-only.
-- It reads the files on disk and has no information on version control or code history. It does not use or update the semantic index.
+- It reads the files on disk and has no information on version control or code history. It reads an existing semantic index for hints and never builds or updates it.
 
 ## When to Use
 

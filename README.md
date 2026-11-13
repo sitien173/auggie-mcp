@@ -126,7 +126,7 @@ driver = "claude"
 args = ["--permission-mode", "bypassPermissions"]
 ```
 
-The query is sent to the agent unchanged. No system prompt is added. The library adds no permission or approval flags. Pass them through `args` when the agent needs unattended tool use.
+The agent receives one prompt: a fixed system prompt, an optional `## Index hints` section built from an existing semantic index, and the unchanged query last under `## Question`. The library adds no permission or approval flags. Pass them through `args` when the agent needs unattended tool use.
 
 ## Tools
 
@@ -192,7 +192,7 @@ Returns a `SearchEnvelope`. `data.index` is `null` in `exact` mode. In `semantic
 
 ### `codebase_retrieval(repository_path, query, goal=None)`
 
-Runs the configured agent CLI noninteractively in `repository_path` and processes the answer through Jev. The call is long running and typically takes several minutes. The agent can edit files, so the tool is not read-only. It reads files on disk. It does not use or update the semantic index.
+Runs the configured agent CLI noninteractively in `repository_path` and processes the answer through Jev. The call is long running and typically takes several minutes. The agent can edit files, so the tool is not read-only. It reads files on disk. It reads an existing semantic index for hints and never builds or updates it.
 
 - `repository_path` (`string`, required): Any accessible directory path.
 - `query` (`string`, required): Natural-language codebase query.
@@ -250,7 +250,7 @@ Each repository keeps its index in a `.auggie/` directory at the repository root
 - **Uncertainty Floor:** Only non-protected chunks scored with retention probability <= `0.1` may be omitted. Omitted contiguous blocks render as deterministic omission markers.
 - **Fail-Open Semantics:** Any API failure, invalid response, timeout, or missing API key fails open. The server returns exact original runner output marked `status: "unclassified"` and `retention: "failed_open"`. Jev errors never become MCP tool errors.
 - **Exit Codes:** Search exit code `1` (no matches found) remains a normal successful MCP call, not a tool error. Operational runner errors (missing executables, path escapes, invalid flags, process crashes) remain MCP tool errors.
-- **No implicit indexing:** No tool refreshes the index as a side effect. Only `index_update` writes it. `codebase_retrieval` does not use the index, and `codebase_search` with `mode="semantic"` only reads it.
+- **No implicit indexing:** No tool refreshes the index as a side effect. Only `index_update` writes it. `codebase_retrieval` only reads an existing index for hints, and `codebase_search` with `mode="semantic"` only reads it.
 - **Index lock:** `auggie index`, `auggie reindex`, `auggie watch`, and the MCP `index_update` (which runs the indexer) take an exclusive OS lock on `index.lock` beside the index database, so only one of them writes a given index at a time. A second one fails fast. Other mutating commands, such as `auggie delete` and `auggie reset`, do not take the lock. `index_update` reports this as `index update already running`, and the CLI emits `error_code` `INDEX_BUSY`. The OS releases the lock when the holder exits.
 - **Lifespan Management:** A single `AsyncTypeSafeClient` is created on server lifespan startup and shared across concurrent calls with SDK retries disabled. It closes cleanly on server shutdown alongside the bounded archive executor.
 
@@ -263,7 +263,7 @@ Each repository keeps its index in a `.auggie/` directory at the repository root
 
 ## Accepted risks
 
-- **Writable tools.** The agent CLI is started with no tool allowlist and no system prompt. Its built-in tools, such as shell and file editing, remain available within the CLI's own permission rules and any `args` you configure. A malicious repository or query could cause the agent to modify files or run commands.
+- **Writable tools.** The agent CLI is started with no tool allowlist. A fixed system prompt asks for read-only behavior but cannot enforce it. Its built-in tools, such as shell and file editing, remain available within the CLI's own permission rules and any `args` you configure. A malicious repository or query could cause the agent to modify files or run commands.
 - **Unlimited concurrency.** Requests start immediately; there is no concurrency limit or queue. Concurrent calls may exhaust CPU, memory, or model API quota, and concurrent requests may modify the same repository.
 - **Model credentials.** The agent CLI uses the caller's configured provider credentials.
 - **`auggie` command name collision.** The Augment `auggie` CLI uses the same command name as this package. If it precedes this package on `PATH`, `auggie query` or `auggie chunk` from the agent subprocess resolve to the wrong binary. `index_update` is not affected: it runs the indexer as `python -m auggie` with the server's interpreter.

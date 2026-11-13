@@ -87,8 +87,10 @@ def _display_path(path: str, root: Path) -> str:
         return path
 
 
-def run_semantic(search_root, query: str, path, top_k: int, context_lines: int) -> dict:
-    """Search the semantic index for ``path`` and return stdout, stderr, exit_code, and index info.
+def run_semantic(search_root, query: str, path, top_k: int, context_lines: int, *, display_root=None) -> dict:
+    """Search the semantic index for ``path`` and return stdout, blocks, stderr, exit_code, and index info.
+
+    ``blocks`` holds the rendered hits that ``stdout`` joins with ``"\\n--\\n"``.
 
     Blocking and read-only: run it through ``asyncio.to_thread``.
     """
@@ -149,6 +151,7 @@ def run_semantic(search_root, query: str, path, top_k: int, context_lines: int) 
         hits = [h for h in hits if Path(h.path) == target or target in Path(h.path).parents]
     hits = hits[:top_k]
 
+    display_base = Path(os.path.realpath(display_root)) if display_root else root
     stale_modified = set(modified)
     blocks = []
     for hit in hits:
@@ -156,11 +159,12 @@ def run_semantic(search_root, query: str, path, top_k: int, context_lines: int) 
             [hit], 0 if hit.path in stale_modified else context_lines
         )[0]
         blocks.append(
-            f"{_display_path(hit.path, root)}:{item['start_line']}-{item['end_line']} "
+            f"{_display_path(hit.path, display_base)}:{item['start_line']}-{item['end_line']} "
             f"score={float(hit.score):.3f}\n{str(item['text']).rstrip(chr(10))}"
         )
     return {
         "stdout": "\n--\n".join(blocks),
+        "blocks": blocks,
         "stderr": "",
         "exit_code": 0 if blocks else 1,
         "index": {

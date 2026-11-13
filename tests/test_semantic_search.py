@@ -211,8 +211,34 @@ class RunSemanticTest(SemanticCase):
             result["stdout"],
             "a.py:2-3 score=0.988\nalpha\n--\npkg/b.py:5-9 score=0.500\nbeta\nline",
         )
+        self.assertEqual(
+            result["blocks"],
+            ["a.py:2-3 score=0.988\nalpha", "pkg/b.py:5-9 score=0.500\nbeta\nline"],
+        )
+        self.assertEqual("\n--\n".join(result["blocks"]), result["stdout"])
         self.assertEqual(result["exit_code"], 0)
         self.assertEqual(result["stderr"], "")
+
+    def test_display_root_makes_paths_subdirectory_relative(self):
+        self.write("a.py")
+        self.write("pkg/b.py")
+        self.build_index(["a.py", "pkg/b.py"])
+        hits = [self.hit("pkg/b.py", text="beta"), self.hit("a.py", text="alpha")]
+        with patch("auggie_mcp.semantic_search.query_db", return_value=(hits, True)):
+            result = semantic_search.run_semantic(
+                self.repo, "q", ".", 10, 0, display_root=self.repo / "pkg"
+            )
+        blocks = result["stdout"].split("\n--\n")
+        self.assertEqual(blocks[0], "b.py:2-3 score=0.988\nbeta")
+        self.assertEqual(blocks[1], f"{self.repo / 'a.py'}:2-3 score=0.988\nalpha")
+
+    def test_omitted_display_root_keeps_git_root_relative_paths(self):
+        self.write("pkg/b.py")
+        self.build_index(["pkg/b.py"])
+        hits = [self.hit("pkg/b.py", text="beta")]
+        with patch("auggie_mcp.semantic_search.query_db", return_value=(hits, True)):
+            result = semantic_search.run_semantic(self.repo, "q", "pkg", 10, 0)
+        self.assertEqual(result["stdout"], "pkg/b.py:2-3 score=0.988\nbeta")
 
     def test_no_hits_is_exit_code_1(self):
         self.write("a.py")
