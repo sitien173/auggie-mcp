@@ -20,7 +20,8 @@ import math
 import os
 import sys
 import time
-from typing import Literal, overload
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Literal, overload
 
 from .models import get_max_batch_size, resolve_dimensions, resolve_model
 
@@ -34,6 +35,7 @@ DEFAULT_VOYAGE_TIMEOUT = 120.0
 DEFAULT_VOYAGE_RETRIES = 2
 DEFAULT_VOYAGE_CHARS_PER_TOKEN = 1.0
 VOYAGE_BATCH_TOKEN_LIMIT = 120000
+VOYAGE_CONCURRENCY = 4
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:
@@ -104,38 +106,13 @@ def _create_voyage_batches(
 
 
 def _embed_voyage(
+    client: Any,
     texts: list[str],
     model: str,
     input_type: str,
     output_dimension: int | None,
 ) -> tuple[list[bytes], int]:
-    """Embed texts using Voyage AI."""
-    try:
-        import voyageai
-    except ImportError as e:
-        raise ImportError(
-            "Voyage embeddings require the voyageai package. "
-            "Install the dependencies from requirements.txt."
-        ) from e
-
-    api_key = os.environ.get(ENV_VOYAGE_API_KEY)
-    if not api_key:
-        raise ValueError(
-            f"{ENV_VOYAGE_API_KEY} environment variable is not set. "
-            "Get an API key from https://www.voyageai.com/."
-        )
-
-    timeout_str = os.environ.get(ENV_VOYAGE_TIMEOUT)
-    timeout = float(timeout_str) if timeout_str else DEFAULT_VOYAGE_TIMEOUT
-    retries_str = os.environ.get(ENV_VOYAGE_RETRIES)
-    max_retries = int(retries_str) if retries_str else DEFAULT_VOYAGE_RETRIES
-
-    client = voyageai.Client(
-        api_key=api_key,
-        timeout=timeout,
-        max_retries=max_retries,
-    )
-
+    """Embed texts using a Voyage client."""
     kwargs = {
         "texts": texts,
         "model": model,
@@ -204,16 +181,46 @@ def _embed_voyage_batched(
 
     batches = _create_voyage_batches(texts, max_tokens=max_tokens, max_count=max_batch_count)
 
+    try:
+        import voyageai
+    except ImportError as e:
+        raise ImportError(
+            "Voyage embeddings require the voyageai package. "
+            "Install the dependencies from requirements.txt."
+        ) from e
+
+    api_key = os.environ.get(ENV_VOYAGE_API_KEY)
+    if not api_key:
+        raise ValueError(
+            f"{ENV_VOYAGE_API_KEY} environment variable is not set. "
+            "Get an API key from https://www.voyageai.com/."
+        )
+
+    timeout_str = os.environ.get(ENV_VOYAGE_TIMEOUT)
+    timeout = float(timeout_str) if timeout_str else DEFAULT_VOYAGE_TIMEOUT
+    retries_str = os.environ.get(ENV_VOYAGE_RETRIES)
+    max_retries = int(retries_str) if retries_str else DEFAULT_VOYAGE_RETRIES
+
+    client = voyageai.Client(
+        api_key=api_key,
+        timeout=timeout,
+        max_retries=max_retries,
+    )
+
+    def embed_batch(batch: list[str]) -> tuple[list[bytes], int]:
+        return _embed_voyage(client, batch, model, input_type, dimensions)
+
+    if len(batches) == 1:
+        results = [embed_batch(batches[0])]
+    else:
+        with ThreadPoolExecutor(max_workers=VOYAGE_CONCURRENCY) as executor:
+            results = list(executor.map(embed_batch, batches))
+
     all_blobs: list[bytes] = []
-    dim = 0
-
-    for batch in batches:
-        blobs, batch_dim = _embed_voyage(batch, model, input_type, dimensions)
+    for blobs, _ in results:
         all_blobs.extend(blobs)
-        if dim == 0:
-            dim = batch_dim
 
-    return all_blobs, dim
+    return all_blobs, results[0][1]
 
 
 @overload

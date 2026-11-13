@@ -28,7 +28,12 @@ from .db import (
     log_history,
     touch_file_state,
 )
-from .embed import embed_texts
+from .embed import (
+    VOYAGE_BATCH_TOKEN_LIMIT,
+    VOYAGE_CONCURRENCY,
+    _estimate_voyage_tokens,
+    embed_texts,
+)
 from .filetype import detect_file_types_batch, has_file_command
 from .lance_store import LanceStore, get_lance_dir
 from .models import get_model, resolve_model
@@ -971,6 +976,153 @@ def _store_chunk_metadata(
     return vector_rows
 
 
+EMBED_GROUP_TOKENS = VOYAGE_CONCURRENCY * int(VOYAGE_BATCH_TOKEN_LIMIT * 0.8)
+EMBED_GROUP_MAX_FILES = 256
+
+
+@dataclass
+class _PlannedFile:
+    """A changed file whose chunks are planned but not yet written."""
+
+    rel: str
+    mtime_ns: int
+    size: int
+    sha: str
+    existing_file_id: int | None
+    chunks: list
+    chunk_hashes: list[str]
+    preserved_rows: dict[int, tuple[int, int]]
+    reusable_new_rows: list[tuple[int, bytes, int]]
+    chunks_to_embed: list[tuple[int, str]]
+    removed_chunk_ids: list[int]
+
+
+def _write_planned_file(
+    con,
+    lance_store: LanceStore,
+    planned: _PlannedFile,
+    new_embeddings: dict[int, tuple[bytes, int]],
+    model: str,
+    branch: str,
+) -> None:
+    """Write one planned file and its embeddings in a single transaction."""
+    existing_file_id = planned.existing_file_id
+    removed_chunk_ids = planned.removed_chunk_ids
+    new_chunk_ids: list[int] = []
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        file_id = _upsert_file_record(
+            con,
+            planned.rel,
+            planned.mtime_ns,
+            planned.size,
+            planned.sha,
+            branch,
+            (existing_file_id,) if existing_file_id is not None else None,
+        )
+        if removed_chunk_ids:
+            placeholders = ",".join("?" * len(removed_chunk_ids))
+            con.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", removed_chunk_ids)
+        # Vacate the positive chunk_index space for this file before applying the
+        # new layout. Preserved rows are renumbered in place and new rows are
+        # inserted; doing that without first moving surviving rows out of the
+        # target range transiently violates UNIQUE(file_id, chunk_index) when an
+        # edit shifts chunk boundaries.
+        if existing_file_id is not None:
+            con.execute(
+                "UPDATE chunks SET chunk_index = -(chunk_index + 1) WHERE file_id = ?",
+                (file_id,),
+            )
+        vector_rows = _store_chunk_metadata(
+            con,
+            file_id,
+            planned.chunks,
+            planned.chunk_hashes,
+            planned.preserved_rows,
+            new_embeddings,
+            planned.reusable_new_rows,
+            model,
+        )
+        new_chunk_ids = [chunk_id for chunk_id, _emb, _dim in vector_rows]
+        # Remove any stale rows left in the vacated negative space. These are
+        # old chunks whose vectors were reused under a new chunk_id (reuse-as-
+        # new-row), so they are now redundant duplicates.
+        stale_chunk_ids: list[int] = []
+        if existing_file_id is not None:
+            stale_chunk_ids = [
+                int(r[0])
+                for r in con.execute(
+                    "SELECT id FROM chunks WHERE file_id = ? AND chunk_index < 0",
+                    (file_id,),
+                ).fetchall()
+            ]
+            if stale_chunk_ids:
+                placeholders = ",".join("?" * len(stale_chunk_ids))
+                con.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", stale_chunk_ids)
+        lance_store.upsert_chunk_vectors(vector_rows, model=model)
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        if new_chunk_ids:
+            lance_store.delete_chunk_ids(new_chunk_ids)
+        raise
+    if removed_chunk_ids:
+        lance_store.delete_chunk_ids(removed_chunk_ids)
+    if stale_chunk_ids:
+        lance_store.delete_chunk_ids(stale_chunk_ids)
+
+
+def _flush_pending(
+    con,
+    lance_store: LanceStore,
+    pending: list[_PlannedFile],
+    model: str,
+    dimensions: int | None,
+    branch: str,
+    expected_dim: int | None,
+    stats: IndexStats,
+) -> int | None:
+    """
+    Embed all pending files with one call, then write each file in its own transaction.
+
+    Texts with the same text_sha256 are embedded once and the vector is shared by
+    every chunk that needs it. Returns the updated expected dimension.
+    """
+    if not pending:
+        return expected_dim
+
+    unique_texts: dict[str, str] = {}
+    first_owner: dict[str, _PlannedFile] = {}
+    for planned in pending:
+        for idx, text in planned.chunks_to_embed:
+            sha = planned.chunk_hashes[idx]
+            owner = first_owner.setdefault(sha, planned)
+            unique_texts.setdefault(sha, text)
+            if owner is not planned:
+                # Writing files one by one would have found this vector globally.
+                stats.chunks_embedded -= 1
+                stats.chunks_reused += 1
+                stats.chunks_reused_global += 1
+
+    vectors: dict[str, bytes] = {}
+    dim: int | None = None
+    if unique_texts:
+        shas = list(unique_texts)
+        emb_blobs, dim = embed_texts(
+            [unique_texts[sha] for sha in shas], model=model, dimensions=dimensions
+        )
+        vectors = dict(zip(shas, emb_blobs, strict=True))
+        if expected_dim is None:
+            expected_dim = dim
+
+    for planned in pending:
+        new_embeddings = {
+            idx: (vectors[planned.chunk_hashes[idx]], dim) for idx, _ in planned.chunks_to_embed
+        }
+        _write_planned_file(con, lance_store, planned, new_embeddings, model, branch)
+    return expected_dim
+
+
 def index_path(
     root: Path,
     db_path: Path,
@@ -1118,6 +1270,9 @@ def index_path(
         with tqdm(total=len(files), desc="Detecting", unit=" files", leave=False) as pbar:
             detection_results = detect_file_types_batch(files, progress_callback=pbar.update)
 
+    pending: list[_PlannedFile] = []
+    pending_tokens = 0
+
     for p in tqdm(files, desc="Indexing"):
         st = p.stat()
         rel = str(p.resolve())
@@ -1209,81 +1364,33 @@ def index_path(
             stats,
         )
 
-        # ── Phase 5: Generate new embeddings (API call, outside transaction) ──
-        new_embeddings: dict[int, tuple[bytes, int]] = {}
-        if chunks_to_embed:
-            texts = [t for _, t in chunks_to_embed]
-            emb_blobs, dim = embed_texts(texts, model=model, dimensions=dimensions)
-            for (idx, _), emb in zip(chunks_to_embed, emb_blobs, strict=True):
-                new_embeddings[idx] = (emb, dim)
-            if expected_dim is None:
-                expected_dim = dim
+        # ── Phase 5: Queue the planned file; embed once the group is full ──
+        pending.append(
+            _PlannedFile(
+                rel=rel,
+                mtime_ns=st.st_mtime_ns,
+                size=st.st_size,
+                sha=sha,
+                existing_file_id=existing_file_id,
+                chunks=chunks,
+                chunk_hashes=chunk_hashes,
+                preserved_rows=preserved_rows,
+                reusable_new_rows=reusable_new_rows,
+                chunks_to_embed=chunks_to_embed,
+                removed_chunk_ids=removed_chunk_ids,
+            )
+        )
+        pending_tokens += sum(_estimate_voyage_tokens(t) for _, t in chunks_to_embed)
+        if pending_tokens >= EMBED_GROUP_TOKENS or len(pending) >= EMBED_GROUP_MAX_FILES:
+            expected_dim = _flush_pending(
+                con, lance_store, pending, model, dimensions, branch, expected_dim, stats
+            )
+            pending = []
+            pending_tokens = 0
 
-        # ── Phase 6: Atomic DB write (transaction) ──
-        new_chunk_ids: list[int] = []
-        try:
-            con.execute("BEGIN IMMEDIATE")
-            file_id = _upsert_file_record(
-                con,
-                rel,
-                st.st_mtime_ns,
-                st.st_size,
-                sha,
-                branch,
-                (existing_file_id,) if existing_file_id is not None else None,
-            )
-            if removed_chunk_ids:
-                placeholders = ",".join("?" * len(removed_chunk_ids))
-                con.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", removed_chunk_ids)
-            # Vacate the positive chunk_index space for this file before applying the
-            # new layout. Preserved rows are renumbered in place and new rows are
-            # inserted; doing that without first moving surviving rows out of the
-            # target range transiently violates UNIQUE(file_id, chunk_index) when an
-            # edit shifts chunk boundaries.
-            if existing_file_id is not None:
-                con.execute(
-                    "UPDATE chunks SET chunk_index = -(chunk_index + 1) WHERE file_id = ?",
-                    (file_id,),
-                )
-            vector_rows = _store_chunk_metadata(
-                con,
-                file_id,
-                chunks,
-                chunk_hashes,
-                preserved_rows,
-                new_embeddings,
-                reusable_new_rows,
-                model,
-            )
-            new_chunk_ids = [chunk_id for chunk_id, _emb, _dim in vector_rows]
-            # Remove any stale rows left in the vacated negative space. These are
-            # old chunks whose vectors were reused under a new chunk_id (reuse-as-
-            # new-row), so they are now redundant duplicates.
-            stale_chunk_ids: list[int] = []
-            if existing_file_id is not None:
-                stale_chunk_ids = [
-                    int(r[0])
-                    for r in con.execute(
-                        "SELECT id FROM chunks WHERE file_id = ? AND chunk_index < 0",
-                        (file_id,),
-                    ).fetchall()
-                ]
-                if stale_chunk_ids:
-                    placeholders = ",".join("?" * len(stale_chunk_ids))
-                    con.execute(
-                        f"DELETE FROM chunks WHERE id IN ({placeholders})", stale_chunk_ids
-                    )
-            lance_store.upsert_chunk_vectors(vector_rows, model=model)
-            con.execute("COMMIT")
-        except Exception:
-            con.execute("ROLLBACK")
-            if new_chunk_ids:
-                lance_store.delete_chunk_ids(new_chunk_ids)
-            raise
-        if removed_chunk_ids:
-            lance_store.delete_chunk_ids(removed_chunk_ids)
-        if stale_chunk_ids:
-            lance_store.delete_chunk_ids(stale_chunk_ids)
+    expected_dim = _flush_pending(
+        con, lance_store, pending, model, dimensions, branch, expected_dim, stats
+    )
 
     deleted_paths = sorted(set(file_states) - seen_paths)
     for deleted_path in deleted_paths:
