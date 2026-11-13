@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,7 @@ from tests.test_server import (  # noqa: F401
 )
 
 PROTOCOL = "2026-07-28"
+FAKE_INDEX_COMMAND = [sys.executable, str(Path(__file__).parent / "fake_auggie.py")]
 
 
 def connect(srv):
@@ -125,7 +127,11 @@ class ProtocolTest(unittest.TestCase):
                 progress_callback=on_progress,
             )
 
-        result = self.run_client(lambda: fake_server(self.repo), fn)
+        with (
+            patch.dict(os.environ, {"VOYAGE_API_KEY": "test-key"}),
+            patch.object(index_tools, "default_index_command", return_value=FAKE_INDEX_COMMAND),
+        ):
+            result = self.run_client(lambda: fake_server(self.repo), fn)
         self.assertFalse(result.is_error)
         self.assertGreaterEqual(len(events), 1)
 
