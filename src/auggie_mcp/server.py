@@ -88,7 +88,7 @@ _SEARCH_TOOL_DESCRIPTION = (
 _INSTRUCTIONS = """\
 1. Use `codebase_search` with `mode=exact` for known literals and symbols. It needs no index.
 2. For concept queries, call `index_status`. If the index is missing or stale, call `index_update`, then `codebase_search` with `mode=semantic`.
-3. Use `codebase_retrieval` only for a synthesized answer. It is slow and runs an agent."""
+3. Use `codebase_retrieval` only for a synthesized answer, and do not know which files hold the information"""
 
 
 def _client_info(ctx: Any) -> dict[str, Any] | None:
