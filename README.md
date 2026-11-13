@@ -404,3 +404,7 @@ uv run python -m unittest tests.test_cli -v
 uv run python -m unittest discover -s tests -v
 uv run pytest tests/semantic -q
 ```
+
+## License
+
+Released under the [MIT License](LICENSE). Release notes are in [CHANGELOG.md](CHANGELOG.md).

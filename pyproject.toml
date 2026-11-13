@@ -6,6 +6,10 @@ build-backend = "hatchling.build"
 name = "auggie-mcp"
 version = "0.5.0"
 description = "Python MCP server exposing codebase retrieval through a coding-agent CLI"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Tien Ngo" }]
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=2.3,<3",
