@@ -22,8 +22,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Run tests with coverage
         run: |
           uv run --frozen --python ${{ matrix.python-version }} coverage run -m pytest tests

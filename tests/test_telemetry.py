@@ -193,7 +193,7 @@ class CallRecordTest(unittest.TestCase):
 
     def test_finish_writes_schema_v1_event(self):
         rec = telemetry.CallRecord(
-            "mcp", "grep_search", {"pattern": "x"}, environ=self.env
+            "mcp", "semantic_search", {"pattern": "x"}, environ=self.env
         )
         self.assertTrue(rec.finish("ok", now=NOW))
         (event,) = self.read_events()
@@ -208,7 +208,7 @@ class CallRecordTest(unittest.TestCase):
         self.assertEqual(event["v"], 1)
         self.assertEqual(event["ts"], "2026-11-12T15:04:05.123Z")
         self.assertEqual(event["source"], "mcp")
-        self.assertEqual(event["tool"], "grep_search")
+        self.assertEqual(event["tool"], "semantic_search")
         self.assertEqual(event["input"], {"pattern": "x"})
         self.assertEqual(event["outcome"], "ok")
         self.assertIsNone(event["client"])

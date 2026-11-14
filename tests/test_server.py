@@ -1,4 +1,4 @@
-"""Contract tests for the five-tool MCP server."""
+"""Contract tests for the four-tool MCP server."""
 
 import asyncio
 import importlib.metadata
@@ -24,14 +24,11 @@ from auggie_mcp import (
     telemetry,
 )
 
-FAKE_RG = Path(__file__).parent / "fake_rg.py"
-
 
 def make_server(repo=None):
     cfg = config.Config(agent=config.AgentConfig(driver="pi"))
     return server.create_server(
         app_config=cfg,
-        rg_executable=str(FAKE_RG),
         repository_root=repo,
     )
 
@@ -47,13 +44,12 @@ class ServerTest(unittest.TestCase):
     def call(self, srv, name, args):
         return asyncio.run(srv.call_tool(name, args))
 
-    def test_five_tools_have_expected_parameters_and_output_schema(self):
+    def test_four_tools_have_expected_parameters_and_output_schema(self):
         tools = asyncio.run(make_server(self.repo).list_tools())
         self.assertEqual([tool.name for tool in tools], [
-            "grep_search", "semantic_search", "index_status", "index_update", "codebase_retrieval"
+            "semantic_search", "index_status", "index_update", "codebase_retrieval"
         ])
         expected = {
-            "grep_search": {"repository_path", "pattern", "path", "flags", "max_results"},
             "semantic_search": {"repository_path", "query", "path", "top_k", "context_lines"},
             "index_status": {"repository_path"},
             "index_update": {"repository_path", "rebuild"},
@@ -65,14 +61,6 @@ class ServerTest(unittest.TestCase):
 
     def test_metadata_version_comes_from_distribution(self):
         self.assertEqual(make_server().version, importlib.metadata.version("auggie-mcp"))
-
-    def test_grep_structured_and_text_output_agree(self):
-        result = self.call(make_server(self.repo), "grep_search", {
-            "repository_path": str(self.repo), "pattern": "hello", "flags": ["-F"]
-        })
-        self.assertFalse(result.is_error)
-        self.assertEqual(result.structured_content, json.loads(result.content[0].text))
-        self.assertEqual(set(result.structured_content), {"matches", "truncated", "archive_path"})
 
     def test_index_update_and_retrieval_shapes(self):
         with patch.object(server, "_run_index_update", AsyncMock(return_value={
@@ -130,17 +118,17 @@ class ServerTest(unittest.TestCase):
 
     def test_error_mapping(self):
         cases = [
-            ("INVALID_PATH", "grep_search", {"repository_path": str(self.repo), "pattern": "x", "path": "missing"}, None),
+            ("INVALID_PATH", "index_status", {"repository_path": str(self.repo / "missing")}, None),
             ("INVALID_ARGUMENT", "semantic_search", {"repository_path": str(self.repo), "query": "x", "top_k": 0}, None),
             ("INDEX_MISSING", "semantic_search", {"repository_path": str(self.repo), "query": "x"}, semantic.IndexMissingError("missing index")),
             ("INDEX_MODEL_MISMATCH", "semantic_search", {"repository_path": str(self.repo), "query": "x"}, semantic.ModelMismatchError("wrong model")),
             ("INDEX_BUSY", "index_update", {"repository_path": str(self.repo)}, locking.IndexBusyError("busy")),
             ("MISSING_API_KEY", "index_update", {"repository_path": str(self.repo)}, embed.MissingApiKeyError("missing key")),
             ("EMBED_FAILED", "index_update", {"repository_path": str(self.repo)}, embed.EmbedError("HTTP 503")),
-            ("TIMEOUT", "grep_search", {"repository_path": str(self.repo), "pattern": "x"}, TimeoutError("too slow")),
+            ("TIMEOUT", "index_update", {"repository_path": str(self.repo)}, TimeoutError("too slow")),
             ("RETRIEVAL_BUSY", "codebase_retrieval", {"repository_path": str(self.repo), "query": "x"}, retrieval.RetrievalBusyError("busy")),
             ("REPO_MODIFIED", "codebase_retrieval", {"repository_path": str(self.repo), "query": "x"}, retrieval.RepoModifiedError("changed")),
-            ("BINARY_NOT_FOUND", "grep_search", {"repository_path": str(self.repo), "pattern": "x"}, FileNotFoundError("rg executable not found")),
+            ("BINARY_NOT_FOUND", "codebase_retrieval", {"repository_path": str(self.repo), "query": "x"}, FileNotFoundError("agent executable not found")),
         ]
         for code, name, args, error in cases:
             with self.subTest(code=code):
@@ -149,7 +137,6 @@ class ServerTest(unittest.TestCase):
                         "semantic_search": (semantic, "semantic_search"),
                         "index_update": (server, "_run_index_update"),
                         "codebase_retrieval": (retrieval, "run_agent"),
-                        "grep_search": (server.grep, "grep_search"),
                     }[name]
                     with patch.object(target[0], target[1], side_effect=error), self.assertRaisesRegex(
                         ToolError, code
@@ -179,8 +166,8 @@ class ServerTest(unittest.TestCase):
             enabled=False, dir=telemetry_dir, retention_days=2
         ))
         with patch.dict(os.environ, {"AUGGIE_TELEMETRY": "1", "AUGGIE_TELEMETRY_DIR": str(telemetry_dir / "env")}):
-            self.call(server.create_server(app_config=cfg, rg_executable=str(FAKE_RG)), "grep_search", {
-                "repository_path": str(self.repo), "pattern": "hello"
+            self.call(server.create_server(app_config=cfg), "index_status", {
+                "repository_path": str(self.repo)
             })
         self.assertFalse(telemetry_dir.exists())
 
@@ -192,8 +179,8 @@ class ServerTest(unittest.TestCase):
         )
         cfg = config.load(config_file, environ={})
         with patch.dict(os.environ, {"AUGGIE_TELEMETRY_DIR": str(self.repo / "from-env")}):
-            self.call(server.create_server(app_config=cfg, rg_executable=str(FAKE_RG)), "grep_search", {
-                "repository_path": str(self.repo), "pattern": "hello"
+            self.call(server.create_server(app_config=cfg), "index_status", {
+                "repository_path": str(self.repo)
             })
         self.assertEqual(len(list(telemetry_dir.glob("events-*.jsonl"))), 1)
         self.assertFalse((self.repo / "from-env").exists())
@@ -206,7 +193,7 @@ class ServerTest(unittest.TestCase):
         )
         cfg = config.load(config_file, environ={})
         srv = server.create_server(
-            app_config=cfg, repository_root=self.repo, rg_executable=str(FAKE_RG)
+            app_config=cfg, repository_root=self.repo
         )
 
         async def run():

@@ -1,10 +1,10 @@
 # Auggie MCP
 
-A Python MCP server for exact repository search, semantic code search, index maintenance, and read-only codebase retrieval. The server exposes five tools over stdio and stores embeddings in one SQLite file per repository.
+A Python MCP server for semantic code search, index maintenance, and read-only codebase retrieval. The server exposes four tools over stdio and stores embeddings in one SQLite file per repository.
 
 ## Install
 
-Requires Python 3.12+, `uv`, and ripgrep (`rg`) on `PATH`.
+Requires Python 3.12+ and `uv`.
 
 ```bash
 uv sync
@@ -19,13 +19,12 @@ Every tool accepts `repository_path`, except that `index_update` also accepts `r
 
 | Tool | Parameters | Result shape |
 |---|---|---|
-| `grep_search` | `repository_path`, `pattern`, `path="."`, `flags=[]`, `max_results=200` | `matches`: `{path, line, text}` items; `truncated`; `archive_path` |
 | `semantic_search` | `repository_path`, `query`, `path="."`, `top_k=10` (1-50), `context_lines=0` (0-20) | `hits`: `{path, start_line, end_line, score, stale, text}` items; `index`: `{generation, last_indexed}`; truncation metadata |
 | `index_status` | `repository_path` | `{exists, model_key, files, chunks, embeddings, stale, next_step}` |
 | `index_update` | `repository_path`, `rebuild=false` | `{files_scanned, files_changed, files_deleted, chunks_embedded, chunks_reused, duration_ms}` |
 | `codebase_retrieval` | `repository_path`, `query` | `{answer, driver, duration_ms, repo_modified}` plus truncation metadata |
 
-`grep_search` runs ripgrep and does not require an index. `semantic_search` reads the index only and returns an empty hit list for a search path outside the repository. `index_status` uses file metadata and does not hash files. Only `index_update` writes the index. Tool errors use these codes: `INVALID_PATH`, `INVALID_ARGUMENT`, `INDEX_MISSING`, `INDEX_MODEL_MISMATCH`, `INDEX_BUSY`, `MISSING_API_KEY`, `EMBED_FAILED`, `TIMEOUT`, `RETRIEVAL_BUSY`, `REPO_MODIFIED`, `BINARY_NOT_FOUND`, and `INTERNAL_ERROR`.
+The server has no exact-match tool. Use the client agent's built-in grep for literals and regular expressions. `semantic_search` reads the index only and returns an empty hit list for a search path outside the repository. `index_status` uses file metadata and does not hash files. Only `index_update` writes the index. Tool errors use these codes: `INVALID_PATH`, `INVALID_ARGUMENT`, `INDEX_MISSING`, `INDEX_MODEL_MISMATCH`, `INDEX_BUSY`, `MISSING_API_KEY`, `EMBED_FAILED`, `TIMEOUT`, `RETRIEVAL_BUSY`, `REPO_MODIFIED`, `BINARY_NOT_FOUND`, and `INTERNAL_ERROR`.
 
 ### Retrieval safety and limits
 

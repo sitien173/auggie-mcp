@@ -10,7 +10,8 @@ Entries before the first public release were reconstructed from the Git history.
 
 ### SQLite-only rewrite breaking changes
 
-- Removed `codebase_search`; use `grep_search` for exact matches and `semantic_search` for concept search.
+- Removed `codebase_search`; use the client agent's built-in grep for exact matches and `semantic_search` for concept search.
+- Removed the ripgrep dependency.
 - Removed the `goal` parameter from `codebase_retrieval`.
 - Removed Jev and TypeSafe output processing.
 - The new index file `.auggie/index-v2.sqlite` requires a one-time full re-embed. Older `.auggie/` files are not deleted automatically and must be removed manually if no longer needed.

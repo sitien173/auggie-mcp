@@ -1,4 +1,4 @@
-"""Stdio MCP server exposing the five SQLite rewrite tools."""
+"""Stdio MCP server exposing the four SQLite rewrite tools."""
 
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ from mcp.types import ToolAnnotations
 from auggie_mcp import (
     config,
     embed,
-    grep,
     indexer,
     locking,
     output_limits,
@@ -35,13 +34,12 @@ from auggie_mcp import (
 TOOL_TIMEOUT_S = 1800
 
 _INSTRUCTIONS = """\
-1. Use `grep_search` for known literals, symbols, and regular expressions.
+1. Use your built-in grep tool for known literals, symbols, and regular expressions.
 2. For concept queries, call `index_status`. If the index is missing or stale, call `index_update`, then `semantic_search`.
 3. Use `codebase_retrieval` when you need a synthesized answer.
 """
 
 _TOOL_DESCRIPTIONS = {
-    "grep_search": "Search repository text with ripgrep. No matches are a normal empty result.",
     "semantic_search": "Return ranked code chunks from the SQLite semantic index. Search never updates the index.",
     "index_status": "Inspect index counts and stat-only staleness without changing the index.",
     "index_update": "Build or refresh the repository's SQLite semantic index.",
@@ -118,8 +116,6 @@ def _error_code(exc: BaseException) -> tuple[str, str]:
         if "path does not exist" in message.lower() or "not a directory" in message.lower():
             return "INVALID_PATH", message
         return "INVALID_ARGUMENT", message
-    if "regex parse error" in lowered or "unrecognized flag" in lowered:
-        return "INVALID_ARGUMENT", message
     return "INTERNAL_ERROR", message
 
 
@@ -145,11 +141,7 @@ def _instrument(tool_name: str, telemetry_config: config.TelemetryConfig) -> Cal
             try:
                 with record.stage("runner"):
                     result = await function(*args, **kwargs)
-                if tool_name == "grep_search":
-                    runner = result.pop("_runner", None)
-                    if runner is not None:
-                        record.set_runner(**runner)
-                elif tool_name == "codebase_retrieval":
+                if tool_name == "codebase_retrieval":
                     record.set_runner(
                         exit_code=0,
                         stdout_bytes=len(result["answer"].encode("utf-8")),
@@ -160,20 +152,16 @@ def _instrument(tool_name: str, telemetry_config: config.TelemetryConfig) -> Cal
             except asyncio.CancelledError as exc:
                 outcome = "cancelled"
                 error = exc
-                if tool_name in {"grep_search", "codebase_retrieval"}:
+                if tool_name == "codebase_retrieval":
                     record.set_runner(exit_code=None, stdout_bytes=0, stderr_bytes=0)
                 raise
             except Exception as exc:
                 error = exc
-                if tool_name in {"grep_search", "codebase_retrieval"}:
-                    runner = getattr(exc, "runner", None)
-                    if runner is not None and tool_name == "grep_search":
-                        record.set_runner(**runner)
-                    else:
-                        record.set_runner(
-                            exit_code=None, stdout_bytes=0,
-                            stderr_bytes=len(str(exc).encode("utf-8")),
-                        )
+                if tool_name == "codebase_retrieval":
+                    record.set_runner(
+                        exit_code=None, stdout_bytes=0,
+                        stderr_bytes=len(str(exc).encode("utf-8")),
+                    )
                 raise _tool_error(exc) from exc
             finally:
                 record.finish(outcome, error)
@@ -294,7 +282,6 @@ def create_server(
     *,
     app_config: config.Config | None = None,
     executable: str | None = None,
-    rg_executable: str = "rg",
     repository_root: str | Path | None = None,
 ) -> MCPServer:
     """Build the server with configuration supplied by its launcher."""
@@ -314,30 +301,13 @@ def create_server(
     mcp = MCPServer(
         name="auggie-mcp",
         title="Auggie Codebase Search",
-        description="Semantic retrieval and fast exact repository search.",
+        description="Semantic search, indexing, and read-only codebase retrieval.",
         version=importlib.metadata.version("auggie-mcp"),
         instructions=_INSTRUCTIONS,
         lifespan=lifespan,
         cache_hints={"tools/list": CacheHint(ttl_ms=3_600_000, scope="private")},
         subscriptions=False,
     )
-
-    @mcp.tool(description=_TOOL_DESCRIPTIONS["grep_search"], annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))
-    @_instrument("grep_search", cfg.telemetry)
-    async def grep_search(
-        repository_path: str,
-        pattern: str,
-        path: str = ".",
-        flags: list[str] | None = None,
-        max_results: int = 200,
-        ctx: Context | None = None,
-    ) -> dict[str, Any]:
-        repository_path = str(_repository_path(repository_path))
-        grep.resolve_search_path(repository_path, path)
-        return await grep.grep_search(
-            repository_path, pattern, path=path, flags=flags, max_results=max_results,
-            executable=rg_executable, include_runner=True,
-        )
 
     @mcp.tool(name="semantic_search", description=_TOOL_DESCRIPTIONS["semantic_search"], annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))
     @_instrument("semantic_search", cfg.telemetry)

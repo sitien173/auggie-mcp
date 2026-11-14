@@ -1,7 +1,7 @@
 {
   "name": "auggie-mcp",
   "version": "0.5.0",
-  "description": "MCP server for repository grep, semantic search, indexing, and read-only codebase retrieval.",
+  "description": "MCP server for semantic search, indexing, and read-only codebase retrieval.",
   "private": true,
   "keywords": ["pi-package"],
   "pi": {

@@ -88,7 +88,6 @@ class LaunchTests(unittest.TestCase):
             telemetry=config.TelemetryConfig(dir=telemetry_dir),
         )
         load_count = [0]
-        rg = Path(SRC).parent / "tests" / "fake_rg.py"
 
         def load_config():
             load_count[0] += 1
@@ -99,7 +98,6 @@ class LaunchTests(unittest.TestCase):
             srv = server.create_server(
                 app_config=received_config,
                 repository_root=repository,
-                rg_executable=str(rg),
             )
 
             async def calls():
@@ -108,9 +106,6 @@ class LaunchTests(unittest.TestCase):
                     mode="2026-07-28",
                     client_info=Implementation(name="launcher-test", version="1"),
                 ) as client:
-                    await client.call_tool("grep_search", {
-                        "repository_path": str(repository), "pattern": "hello"
-                    })
                     await client.call_tool("index_status", {
                         "repository_path": str(repository)
                     })
@@ -140,7 +135,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(semantic_configs, [cfg])
         event_files = list(telemetry_dir.glob("events-*.jsonl"))
         self.assertEqual(len(event_files), 1)
-        self.assertEqual(len(event_files[0].read_text().splitlines()), 3)
+        self.assertEqual(len(event_files[0].read_text().splitlines()), 2)
 
     def test_import_does_not_import_legacy_auggie(self):
         proc = self.run_py(

@@ -131,7 +131,7 @@ class CliStatsTest(unittest.TestCase):
         lines += ["not json", "[1, 2]", json.dumps({"v": 2, "ts": "2026-11-12T11:00:00.000Z"}),
                   json.dumps({"v": 1, "ts": "yesterday-ish", "tool": "x"})]
         (self.directory / "events-2026-11-12.jsonl").write_text("\n".join(lines) + "\n")
-        old = self.event("2026-11-10T09:00:00.000Z", "grep_search", "cli", "ok", 50, 60,
+        old = self.event("2026-11-10T09:00:00.000Z", "index_status", "cli", "ok", 50, 60,
                          {"chunks_total": 2, "chunks_retained": 2, "estimated_tokens": 25})
         (self.directory / "events-2026-11-10.jsonl").write_text(json.dumps(old) + "\n")
 
@@ -150,7 +150,7 @@ class CliStatsTest(unittest.TestCase):
         self.assertEqual((code, err), (0, ""))
         data = json.loads(out)
         self.assertEqual((data["events"], data["skipped"]), (4, 4))
-        self.assertEqual(data["by_tool"], {"codebase_retrieval": 2, "semantic_search": 1, "grep_search": 1})
+        self.assertEqual(data["by_tool"], {"codebase_retrieval": 2, "semantic_search": 1, "index_status": 1})
         self.assertEqual(data["durations_ms"], {
             "runner": {"p50": 50, "p95": 300}, "total": {"p50": 60, "p95": 310}
         })
