@@ -2,7 +2,7 @@
 """A deterministic fake Pi executable for tests.
 
 Reads the prompt from stdin and emits a successful Pi ``--mode json`` event
-stream whose final assistant text is ``TEXT``.
+stream, in the shape recorded from Pi 1.5.2, whose final assistant text is ``TEXT``.
 """
 
 import json
@@ -28,8 +28,12 @@ def run():
     emit({"type": "agent_start"})
     emit({"type": "turn_start"})
     emit({"type": "message_end", "message": message("user", prompt)})
-    emit({"type": "message_end", "message": message("assistant", TEXT)})
-    emit({"type": "turn_end", "message": message("assistant", TEXT), "toolResults": []})
+    emit({"type": "message_start", "message": message("assistant", "")})
+    emit({"type": "message_update",
+          "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": TEXT}})
+    final = {**message("assistant", TEXT), "stopReason": "stop"}
+    emit({"type": "message_end", "message": final})
+    emit({"type": "turn_end", "message": final, "toolResults": []})
     emit({"type": "agent_end", "messages": []})
     return 0
 

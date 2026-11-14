@@ -294,8 +294,10 @@ class RunAgentTest(unittest.TestCase):
             "import json\n"
             "from pathlib import Path\n"
             "Path('created.txt').write_text('changed\\n')\n"
+            "print(json.dumps({'type':'message_update','assistantMessageEvent':"
+            "{'type':'text_delta','delta':'discard me'}}))\n"
             "print(json.dumps({'type':'message_end','message':{'role':'assistant',"
-            "'content':[{'type':'text','text':'discard me'}]}}))\n"
+            "'content':[{'type':'text','text':'discard me'}],'stopReason':'stop'}}))\n"
         )
         fake_agent.chmod(0o755)
         with self.assertRaisesRegex(retrieval.RepoModifiedError, "created.txt"):

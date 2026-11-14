@@ -19,6 +19,10 @@ Entries before the first public release were reconstructed from the Git history.
 - Removed configuration keys warn once at startup and are ignored.
 - The server accepts the legacy `initialize` handshake.
 
+### Changed
+
+- Upgraded `coding-agent-cli` from 0.1.0 to 0.2.0.
+
 ### Breaking changes
 
 - The server accepts the legacy `initialize` handshake alongside `server/discover`.

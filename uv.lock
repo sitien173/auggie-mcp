@@ -233,7 +233,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "coding-agent-cli", specifier = "==0.1.0" },
+    { name = "coding-agent-cli", specifier = "==0.2.0" },
     { name = "mcp", specifier = ">=2.3,<3" },
     { name = "numpy", specifier = "==2.5.4" },
     { name = "voyageai", specifier = "==0.4.1" },
@@ -486,11 +486,11 @@ wheels = [
 
 [[package]]
 name = "coding-agent-cli"
-version = "0.1.0"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/af/c4/5229604841dc5adc23eb738c31dcfe0343b5ac8d8852e5f56cce683f614e/coding_agent_cli-0.1.0.tar.gz", hash = "sha256:d4a10e5d134a75923c112b506d6b47088b8729ece7081791a896748257634ca9", size = 158337, upload-time = "2026-11-12T15:31:59.485Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/bc/07b2e3b7caac6a876ce84a9deb06100efbcc0122553f40299501a958ce91/coding_agent_cli-0.2.0.tar.gz", hash = "sha256:1b57fe448d4375820d5eeae6a2a39052fee91261e38f7367bd50e24dab50e00c", size = 213976, upload-time = "2026-11-14T15:39:47.309Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/23/0d/73cbe5e5b4d2116eec6f99316266495efd800b17d8e5924edc32f87d312b/coding_agent_cli-0.1.0-py3-none-any.whl", hash = "sha256:10b9f1648a3ee47b690682eb9ec30673d51f144f34108cb81d28c730cab0a315", size = 44352, upload-time = "2026-11-12T15:31:58.238Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/d0/f5b1cf2a62682658ee88974aa37d82c91eb23ddad7530110541436065a27/coding_agent_cli-0.2.0-py3-none-any.whl", hash = "sha256:cdf785e62544cc1af6afc20449c9905719d981b782603a0fe784eaf54cdc370e", size = 44028, upload-time = "2026-11-14T15:39:45.741Z" },
 ]
 
 [[package]]

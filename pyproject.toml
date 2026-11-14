@@ -15,7 +15,7 @@ dependencies = [
     "mcp>=2.3,<3",
     "numpy==2.5.4",
     "voyageai==0.4.1",
-    "coding-agent-cli==0.1.0",
+    "coding-agent-cli==0.2.0",
 ]
 
 [project.scripts]
