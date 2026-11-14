@@ -1,0 +1,146 @@
+[
+  {
+    "query": "How does is_prune_eligible decide whether to prune output?",
+    "expected": ["src/auggie_mcp/output_processing.py"]
+  },
+  {
+    "query": "Where is RequestBudgetExhaustedError raised during output processing?",
+    "expected": ["src/auggie_mcp/output_processing.py"]
+  },
+  {
+    "query": "How does validate_flags check ripgrep command line arguments?",
+    "expected": ["src/auggie_mcp/rg_runner.py"]
+  },
+  {
+    "query": "What does resolve_search_path do to keep paths inside the repository?",
+    "expected": ["src/auggie_mcp/rg_runner.py"]
+  },
+  {
+    "query": "How does run_semantic execute semantic queries and format results?",
+    "expected": ["src/auggie_mcp/semantic_search.py"]
+  },
+  {
+    "query": "Where is _candidate_added computed for repository index status?",
+    "expected": ["src/auggie_mcp/index_tools.py"]
+  },
+  {
+    "query": "How does default_index_command locate the indexer executable?",
+    "expected": ["src/auggie_mcp/index_tools.py"]
+  },
+  {
+    "query": "How does build_prompt construct the retrieval agent prompt?",
+    "expected": ["src/auggie_mcp/agent_runner.py"]
+  },
+  {
+    "query": "Where is prune_old_files implemented for telemetry log cleanup?",
+    "expected": ["src/auggie_mcp/telemetry.py"]
+  },
+  {
+    "query": "How does CallRecord track tool call duration and outcome?",
+    "expected": ["src/auggie_mcp/telemetry.py"]
+  },
+  {
+    "query": "Where is SchemaOutdatedError raised when opening the SQLite database?",
+    "expected": ["src/auggie/db.py"]
+  },
+  {
+    "query": "How does rebuild_fts5 populate the full-text search index?",
+    "expected": ["src/auggie/db.py"]
+  },
+  {
+    "query": "How does _create_voyage_batches group texts under token limits?",
+    "expected": ["src/auggie/embed.py"]
+  },
+  {
+    "query": "Where is detect_file_types_batch used to filter binary files?",
+    "expected": ["src/auggie/filetype.py"]
+  },
+  {
+    "query": "How does compute_hybrid_confidence score search results?",
+    "expected": ["src/auggie/search.py"]
+  },
+  {
+    "query": "Where is pattern_to_sql_glob defined for path filtering?",
+    "expected": ["src/auggie/search.py"]
+  },
+  {
+    "query": "How does IndexLock prevent concurrent indexing writes?",
+    "expected": ["src/auggie/index_lock.py"]
+  },
+  {
+    "query": "How does LanceStore store and search vector embeddings?",
+    "expected": ["src/auggie/lance_store.py"]
+  },
+  {
+    "query": "How are MCP server tools registered and wired to lifespan state?",
+    "expected": ["src/auggie_mcp/server.py"]
+  },
+  {
+    "query": "How are configuration values loaded from TOML and applied to environment variables?",
+    "expected": ["src/auggie_mcp/settings.py", "src/auggie_mcp/launch.py"]
+  },
+  {
+    "query": "How are ripgrep subprocesses terminated gracefully on timeout or cancellation?",
+    "expected": ["src/auggie_mcp/rg_runner.py"]
+  },
+  {
+    "query": "How does the server detect modified and deleted files compared to the stored index?",
+    "expected": ["src/auggie_mcp/index_tools.py"]
+  },
+  {
+    "query": "How does semantic search validate top_k and context_lines bounds?",
+    "expected": ["src/auggie_mcp/semantic_search.py"]
+  },
+  {
+    "query": "How does the retrieval agent avoid nested MCP calls via environment variables?",
+    "expected": ["src/auggie_mcp/agent_runner.py"]
+  },
+  {
+    "query": "How are long tool outputs compressed or pruned with an LLM client?",
+    "expected": ["src/auggie_mcp/output_processing.py"]
+  },
+  {
+    "query": "How are telemetry events written to daily JSONL files?",
+    "expected": ["src/auggie_mcp/telemetry.py"]
+  },
+  {
+    "query": "How does the CLI parse and dispatch retrieve and search subcommands?",
+    "expected": ["src/auggie_mcp/cli.py"]
+  },
+  {
+    "query": "How are source files split into syntax-aware chunks using tree-sitter?",
+    "expected": ["src/auggie/ast_chunking.py"]
+  },
+  {
+    "query": "How are plain text files split into overlapping line-based chunks?",
+    "expected": ["src/auggie/chunking.py"]
+  },
+  {
+    "query": "How are query embeddings cached across L1, L2, and L3 tiers?",
+    "expected": ["src/auggie/cache.py"]
+  },
+  {
+    "query": "How does the indexer respect gitignore and auggieignore exclusion rules?",
+    "expected": ["src/auggie/indexer.py"]
+  },
+  {
+    "query": "How are Voyage embedding API requests retried on transient failures?",
+    "expected": ["src/auggie/embed.py"]
+  },
+  {
+    "query": "How are embedding model dimensions and optimal chunk sizes resolved?",
+    "expected": ["src/auggie/models.py"]
+  },
+  {
+    "query": "How are vector and keyword search rankings fused with reciprocal rank fusion?",
+    "expected": ["src/auggie/search.py"]
+  },
+  {
+    "query": "How are search results reranked with Voyage rerank models?",
+    "expected": ["src/auggie/rerank.py"]
+  },
+  {
+    "query": "How does the file watcher debounce filesystem events for incremental reindexing?",
+    "expected": ["src/auggie/watcher.py"]
+  }
+]

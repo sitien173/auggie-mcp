@@ -1,1340 +1,386 @@
-"""Unit and contract tests for auggie_mcp.server."""
+"""Contract tests for the five-tool MCP server."""
 
 import asyncio
+import importlib.metadata
 import json
 import os
-import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from mcp import Client
 from mcp.server.mcpserver.exceptions import ToolError
-from typesafe_sdk import ChoiceAnswer
+from mcp.types import Implementation
 
-from auggie_mcp import agent_runner, server
-from auggie_mcp.output_processing import (
-    RetrievalEnvelope,
-    SearchEnvelope,
-    create_typesafe_client,
-    load_config,
+from auggie_mcp import (
+    config,
+    embed,
+    locking,
+    output_limits,
+    retrieval,
+    semantic,
+    server,
+    telemetry,
 )
 
-TESTS_DIR = Path(__file__).resolve().parent
-FAKE_PI = TESTS_DIR / "fake_pi.py"
-FAKE_RG = TESTS_DIR / "fake_rg.py"
-FAKE_AUGGIE = TESTS_DIR / "fake_auggie.py"
-
-if not os.access(FAKE_PI, os.X_OK):
-    os.chmod(FAKE_PI, 0o755)
-if not os.access(FAKE_RG, os.X_OK):
-    os.chmod(FAKE_RG, 0o755)
-if not os.access(FAKE_AUGGIE, os.X_OK):
-    os.chmod(FAKE_AUGGIE, 0o755)
+FAKE_RG = Path(__file__).parent / "fake_rg.py"
 
 
-_SAVED_TELEMETRY_DIR = None
-_TELEMETRY_TMP = None
-_HOME_PATCH = None
-
-
-def setUpModule():
-    global _SAVED_TELEMETRY_DIR, _TELEMETRY_TMP, _HOME_PATCH
-    _SAVED_TELEMETRY_DIR = os.environ.get("AUGGIE_TELEMETRY_DIR")
-    _TELEMETRY_TMP = tempfile.mkdtemp()
-    os.environ["AUGGIE_TELEMETRY_DIR"] = _TELEMETRY_TMP
-    # Keep the user's ~/.auggie/config.toml from selecting a real agent driver.
-    _HOME_PATCH = patch.dict(
-        os.environ, {"HOME": _TELEMETRY_TMP, "AUGGIE_AGENT_DRIVER": "pi"}
-    )
-    _HOME_PATCH.start()
-
-
-def tearDownModule():
-    _HOME_PATCH.stop()
-    if _SAVED_TELEMETRY_DIR is None:
-        os.environ.pop("AUGGIE_TELEMETRY_DIR", None)
-    else:
-        os.environ["AUGGIE_TELEMETRY_DIR"] = _SAVED_TELEMETRY_DIR
-    shutil.rmtree(_TELEMETRY_TMP, ignore_errors=True)
-
-
-def make_server(repository_root=None, client_factory=None, processor_factory=None):
+def make_server(repo=None):
+    cfg = config.Config(agent=config.AgentConfig(driver="pi"))
     return server.create_server(
-        executable=str(FAKE_PI),
+        app_config=cfg,
         rg_executable=str(FAKE_RG),
-        index_command=[os.sys.executable, str(FAKE_AUGGIE)],
-        repository_root=repository_root,
-        client_factory=client_factory,
-        processor_factory=processor_factory,
+        repository_root=repo,
     )
-
-
-class FakeClientWithCounters:
-    """Mock TypeSafe client tracking creation, calls, and closure."""
-
-    def __init__(self):
-        self.created = 0
-        self.system_one_calls = 0
-        self.closed = 0
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.aclose()
-
-    async def aclose(self):
-        self.closed += 1
-
-    async def system_one(self, state, questions, *, model=None, **kwargs):
-        self.system_one_calls += 1
-        choices = {
-            q_id: ChoiceAnswer(choice="reference") for q_id in questions.keys()
-        }
-
-        class Resp:
-            pass
-
-        r = Resp()
-        r.choices = choices
-        return r
 
 
 class ServerTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.repo = Path(self.tmp.name) / "repo"
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name) / "repo"
         self.repo.mkdir()
         (self.repo / "hello.txt").write_text("hello world\n")
 
-    def run_async(self, coro):
-        return asyncio.run(coro)
+    def call(self, srv, name, args):
+        return asyncio.run(srv.call_tool(name, args))
 
-    # ---- 1. Tool discovery and schemas ---------------------------------
-
-    def test_discovery_exposes_exactly_four_tools(self):
-        srv = make_server()
-        tools = self.run_async(srv.list_tools())
-        self.assertEqual(
-            [t.name for t in tools],
-            ["codebase_retrieval", "codebase_search", "index_status", "index_update"],
-        )
-
-    def test_tool_annotations(self):
-        srv = make_server()
-        tools = {t.name: t.annotations for t in self.run_async(srv.list_tools())}
+    def test_five_tools_have_expected_parameters_and_output_schema(self):
+        tools = asyncio.run(make_server(self.repo).list_tools())
+        self.assertEqual([tool.name for tool in tools], [
+            "grep_search", "semantic_search", "index_status", "index_update", "codebase_retrieval"
+        ])
         expected = {
-            "codebase_search": {"readOnlyHint": True, "openWorldHint": True},
-            "codebase_retrieval": {"readOnlyHint": False, "openWorldHint": True},
-            "index_status": {
-                "readOnlyHint": True,
-                "idempotentHint": True,
-                "openWorldHint": False,
-            },
-            "index_update": {
-                "readOnlyHint": False,
-                "destructiveHint": True,
-                "openWorldHint": True,
-            },
+            "grep_search": {"repository_path", "pattern", "path", "flags", "max_results"},
+            "semantic_search": {"repository_path", "query", "path", "top_k", "context_lines"},
+            "index_status": {"repository_path"},
+            "index_update": {"repository_path", "rebuild"},
+            "codebase_retrieval": {"repository_path", "query"},
         }
-        for name, hints in expected.items():
-            with self.subTest(tool=name):
-                dumped = tools[name].model_dump(exclude_none=True, by_alias=True)
-                for key, value in hints.items():
-                    self.assertEqual(dumped[key], value)
-
-    def test_server_instructions_describe_the_workflow(self):
-        srv = make_server()
-        instructions = srv.instructions
-        self.assertTrue(instructions)
-        for name in ("codebase_search", "index_status", "index_update", "codebase_retrieval"):
-            self.assertIn(name, instructions)
-
-    def test_descriptions_name_only_registered_tools(self):
-        srv = make_server()
-        tools = self.run_async(srv.list_tools())
         for tool in tools:
-            with self.subTest(tool=tool.name):
-                self.assertNotIn("real-time index", tool.description)
-                self.assertNotIn("codebase-retrieval", tool.description)
-                for suffix in ("query", "context", "status"):
-                    self.assertNotIn(f"auggie_{suffix}", tool.description)
+            self.assertEqual(set(tool.input_schema["properties"]), expected[tool.name])
+            self.assertIsNotNone(tool.output_schema)
 
-    def test_no_resources_or_prompts(self):
-        srv = make_server()
-        self.assertEqual(self.run_async(srv.list_resources()), [])
-        self.assertEqual(self.run_async(srv.list_prompts()), [])
+    def test_metadata_version_comes_from_distribution(self):
+        self.assertEqual(make_server().version, importlib.metadata.version("auggie-mcp"))
 
-    def test_server_advertised_version_is_0_2_0(self):
-        srv = make_server()
-        self.assertEqual(srv.version, "0.5.0")
-
-    def test_retrieval_tool_schema_matches_phase3_contract(self):
-        srv = make_server()
-        tools = self.run_async(srv.list_tools())
-        tool = next(t for t in tools if t.name == "codebase_retrieval")
-        props = tool.input_schema["properties"]
-        self.assertEqual(set(props), {"repository_path", "query", "goal"})
-        self.assertEqual(
-            set(tool.input_schema["required"]), {"repository_path", "query"}
-        )
-        self.assertEqual(props["goal"]["default"], None)
-
-        out_props = tool.output_schema["properties"]
-        self.assertEqual(set(out_props), {"tool", "data", "processing"})
-        self.assertEqual(
-            set(tool.output_schema["required"]), {"tool", "data", "processing"}
-        )
-        defs = tool.output_schema.get("$defs", {})
-        self.assertIn("RetrievalData", defs)
-        self.assertEqual(defs["RetrievalData"]["required"], ["result"])
-        self.assertIn("ProcessingMetadata", defs)
-        self.assertEqual(
-            set(defs["ProcessingMetadata"]["required"]),
-            {"status", "retention", "estimated_tokens", "recovery_path", "chunks"},
-        )
-
-    def test_search_tool_schema_matches_phase3_contract(self):
-        srv = make_server()
-        tools = self.run_async(srv.list_tools())
-        tool = next(t for t in tools if t.name == "codebase_search")
-        props = tool.input_schema["properties"]
-        self.assertEqual(
-            set(props),
-            {"query", "path", "mode", "flags", "top_k", "context_lines", "goal"},
-        )
-        self.assertEqual(set(tool.input_schema["required"]), {"query"})
-        self.assertEqual(props["path"]["default"], ".")
-        self.assertEqual(props["mode"]["default"], "exact")
-        self.assertEqual(props["top_k"]["default"], 10)
-        self.assertEqual(props["context_lines"]["default"], 0)
-        self.assertEqual(props["goal"]["default"], None)
-
-        out_props = tool.output_schema["properties"]
-        self.assertEqual(set(out_props), {"tool", "data", "processing"})
-        self.assertEqual(
-            set(tool.output_schema["required"]), {"tool", "data", "processing"}
-        )
-        defs = tool.output_schema.get("$defs", {})
-        self.assertIn("SearchData", defs)
-        self.assertEqual(
-            set(defs["SearchData"]["required"]),
-            {"stdout", "stderr", "exit_code", "mode", "index"},
-        )
-        self.assertIn("ProcessingMetadata", defs)
-        self.assertEqual(
-            set(defs["ProcessingMetadata"]["required"]),
-            {"status", "retention", "estimated_tokens", "recovery_path", "chunks"},
-        )
-
-    def test_tool_descriptions_distinguish_semantic_and_exact_search(self):
-        srv = make_server()
-        tools = self.run_async(srv.list_tools())
-        retrieval = next(t for t in tools if t.name == "codebase_retrieval")
-        search = next(t for t in tools if t.name == "codebase_search")
-        self.assertIn("synthesized answer", retrieval.description)
-        self.assertIn("`codebase_search`", retrieval.description)
-        self.assertIn("Absolute path", retrieval.description)
-        self.assertIn("mode='exact'", search.description)
-        self.assertIn("mode='semantic'", search.description)
-        self.assertIn("-F", search.description)
-
-    # ---- 2. Effective-goal behavior -----------------------------------
-
-    def test_effective_goal_forwarding_retrieval(self):
-        class RecordingProcessor:
-            def __init__(self):
-                self.calls = []
-
-            async def process_retrieval(self, query, result, goal=None):
-                self.calls.append({"query": query, "result": result, "goal": goal})
-                return {
-                    "tool": "codebase_retrieval",
-                    "data": {"result": result},
-                    "processing": {
-                        "status": "classified",
-                        "retention": "below_threshold",
-                        "estimated_tokens": 1,
-                        "recovery_path": None,
-                        "chunks": [],
-                    },
-                }
-
-        rec = RecordingProcessor()
-        srv = make_server(processor_factory=lambda _: rec)
-
-        # Explicit goal provided
-        self.run_async(
-            srv.call_tool(
-                "codebase_retrieval",
-                {
-                    "repository_path": str(self.repo),
-                    "query": "query text",
-                    "goal": "explicit goal",
-                },
-            )
-        )
-        self.assertEqual(rec.calls[-1]["goal"], "explicit goal")
-
-        # Goal omitted (falls back to query)
-        self.run_async(
-            srv.call_tool(
-                "codebase_retrieval",
-                {"repository_path": str(self.repo), "query": "fallback query"},
-            )
-        )
-        self.assertEqual(rec.calls[-1]["goal"], "fallback query")
-
-    def test_effective_goal_forwarding_search(self):
-        class RecordingProcessor:
-            def __init__(self):
-                self.calls = []
-
-            async def process_search(
-                self,
-                query,
-                stdout,
-                stderr,
-                exit_code,
-                path=".",
-                flags=None,
-                goal=None,
-                repository=None,
-                mode="exact",
-                index=None,
-            ):
-                self.calls.append({"query": query, "goal": goal})
-                return {
-                    "tool": "codebase_search",
-                    "data": {
-                        "stdout": stdout,
-                        "stderr": stderr,
-                        "exit_code": exit_code,
-                        "mode": mode,
-                        "index": index,
-                    },
-                    "processing": {
-                        "status": "classified",
-                        "retention": "below_threshold",
-                        "estimated_tokens": 1,
-                        "recovery_path": None,
-                        "chunks": [],
-                    },
-                }
-
-        rec = RecordingProcessor()
-        srv = make_server(self.repo, processor_factory=lambda _: rec)
-
-        # Explicit goal provided
-        self.run_async(
-            srv.call_tool(
-                "codebase_search",
-                {"query": "pat", "goal": "explicit search goal"},
-            )
-        )
-        self.assertEqual(rec.calls[-1]["goal"], "explicit search goal")
-
-        # Goal omitted (falls back to query)
-        self.run_async(srv.call_tool("codebase_search", {"query": "fallback_pat"}))
-        self.assertEqual(rec.calls[-1]["goal"], "fallback_pat")
-
-    # ---- 3. Success path and replacement envelopes --------------------
-
-    def test_successful_retrieval_returns_envelope(self):
-        srv = make_server()
-        result = self.run_async(
-            srv.call_tool(
-                "codebase_retrieval",
-                {"repository_path": str(self.repo), "query": "what is here?"},
-            )
-        )
+    def test_grep_structured_and_text_output_agree(self):
+        result = self.call(make_server(self.repo), "grep_search", {
+            "repository_path": str(self.repo), "pattern": "hello", "flags": ["-F"]
+        })
         self.assertFalse(result.is_error)
-        sc = result.structured_content
-        self.assertEqual(sc["tool"], "codebase_retrieval")
-        self.assertEqual(sc["data"]["result"], "Fake final answer.")
-        self.assertIn("processing", sc)
-        self.assertIn(sc["processing"]["status"], {"classified", "unclassified"})
-        self.assertIn(
-            sc["processing"]["retention"], {"below_threshold", "failed_open"}
+        self.assertEqual(result.structured_content, json.loads(result.content[0].text))
+        self.assertEqual(set(result.structured_content), {"matches", "truncated", "archive_path"})
+
+    def test_index_update_and_retrieval_shapes(self):
+        with patch.object(server, "_run_index_update", AsyncMock(return_value={
+            "files_scanned": 1, "files_changed": 1, "files_deleted": 0,
+            "chunks_embedded": 1, "chunks_reused": 0, "duration_ms": 1,
+        })):
+            result = self.call(make_server(self.repo), "index_update", {"repository_path": str(self.repo)})
+        self.assertEqual(set(result.structured_content), {
+            "files_scanned", "files_changed", "files_deleted", "chunks_embedded", "chunks_reused", "duration_ms"
+        })
+        with patch.object(retrieval, "run_agent", AsyncMock(return_value={
+            "answer": "answer", "driver": "pi", "duration_ms": 1,
+            "repo_modified": False, "git_check": "skipped",
+        })):
+            result = self.call(make_server(self.repo), "codebase_retrieval", {
+                "repository_path": str(self.repo), "query": "q"
+            })
+        self.assertEqual(result.structured_content["answer"], "answer")
+        self.assertFalse(result.structured_content["truncated"])
+        self.assertIsNone(result.structured_content["archive_path"])
+        self.assertEqual(result.structured_content, json.loads(result.content[0].text))
+
+    def test_configured_index_timeout_maps_to_timeout(self):
+        cfg = config.Config(
+            index=config.IndexConfig(timeout_s=0.01),
+            telemetry=config.TelemetryConfig(enabled=False),
         )
-        # Content projection is serialized JSON
-        parsed_content = json.loads(result.content[0].text)
-        self.assertEqual(parsed_content["tool"], "codebase_retrieval")
-        self.assertEqual(parsed_content["data"]["result"], "Fake final answer.")
+        process = type("Process", (), {"pid": 987654, "returncode": None})()
+        process.communicate = AsyncMock()
 
-    def test_search_call_returns_envelope(self):
-        srv = make_server(self.repo)
-        result = self.run_async(
-            srv.call_tool(
-                "codebase_search",
-                {"query": "hello", "path": ".", "flags": ["-F"]},
-            )
-        )
-        self.assertFalse(result.is_error)
-        sc = result.structured_content
-        self.assertEqual(sc["tool"], "codebase_search")
-        self.assertEqual(sc["data"]["exit_code"], 0)
-        self.assertIn("search warning", sc["data"]["stderr"])
-        self.assertIn("hello", sc["data"]["stdout"])
-        self.assertIn("processing", sc)
-        parsed_content = json.loads(result.content[0].text)
-        self.assertEqual(parsed_content["tool"], "codebase_search")
-        self.assertEqual(parsed_content["data"]["exit_code"], 0)
+        async def wait_for_timeout(awaitable, *, timeout):
+            awaitable.close()
+            if timeout > 1:
+                raise AssertionError(f"unexpected duration: {timeout}")
+            raise TimeoutError
 
-    def test_search_no_match_is_not_a_tool_error(self):
-        srv = make_server(self.repo)
-        result = self.run_async(
-            srv.call_tool("codebase_search", {"query": "nomatch"})
-        )
-        self.assertFalse(result.is_error)
-        sc = result.structured_content
-        self.assertEqual(sc["tool"], "codebase_search")
-        self.assertEqual(sc["data"]["exit_code"], 1)
-        self.assertIn("processing", sc)
-
-    def test_search_exit_two_is_a_tool_error(self):
-        srv = make_server(self.repo)
-        with self.assertRaisesRegex(ToolError, "regex parse error"):
-            self.run_async(srv.call_tool("codebase_search", {"query": "bad["}))
-
-    # ---- 3b. Retrieval and search never index ---------------------------
-
-    def test_search_starts_no_indexer(self):
-        log = Path(self.tmp.name) / "index.log"
-        srv = make_server(self.repo)
-        with patch.dict(os.environ, {"FAKE_INDEX_LOG": str(log)}):
-            result = self.run_async(
-                srv.call_tool("codebase_search", {"query": "hello"})
-            )
-        self.assertFalse(result.is_error)
-        self.assertFalse(log.exists())
-
-    def test_retrieval_starts_no_indexer(self):
-        log = Path(self.tmp.name) / "index.log"
-        srv = make_server()
-        with patch.dict(os.environ, {"FAKE_INDEX_LOG": str(log)}):
-            result = self.run_async(
-                srv.call_tool(
-                    "codebase_retrieval",
-                    {"repository_path": str(self.repo), "query": "q"},
-                )
-            )
-        self.assertFalse(result.is_error)
-        self.assertFalse(log.exists())
-
-    # ---- 4. Missing API key fail-open ---------------------------------
-
-    def test_missing_api_key_fail_open_retrieval_and_search(self):
-        with patch.dict(os.environ, {"TYPESAFE_API_KEY": ""}, clear=False):
-            srv = make_server(self.repo)
-
-            # Retrieval fails open gracefully
-            res_r = self.run_async(
-                srv.call_tool(
-                    "codebase_retrieval",
-                    {"repository_path": str(self.repo), "query": "q"},
-                )
-            )
-            self.assertFalse(res_r.is_error)
-            sc_r = res_r.structured_content
-            self.assertEqual(sc_r["tool"], "codebase_retrieval")
-            self.assertEqual(sc_r["data"]["result"], "Fake final answer.")
-            self.assertEqual(sc_r["processing"]["status"], "unclassified")
-            self.assertEqual(sc_r["processing"]["retention"], "failed_open")
-
-            # Search fails open gracefully
-            res_s = self.run_async(
-                srv.call_tool("codebase_search", {"query": "hello"})
-            )
-            self.assertFalse(res_s.is_error)
-            sc_s = res_s.structured_content
-            self.assertEqual(sc_s["tool"], "codebase_search")
-            self.assertEqual(sc_s["data"]["exit_code"], 0)
-            self.assertEqual(sc_s["processing"]["status"], "unclassified")
-            self.assertEqual(sc_s["processing"]["retention"], "failed_open")
-
-    # ---- 5. Runner errors stay MCP ToolError ---------------------------
-
-    def test_invalid_repository_path_returns_tool_error(self):
-        srv = make_server()
-        with self.assertRaises(ToolError):
-            self.run_async(
-                srv.call_tool(
-                    "codebase_retrieval",
-                    {
-                        "repository_path": str(self.tmp.name) + "/missing",
-                        "query": "q",
-                    },
-                )
-            )
-
-    def test_search_path_escape_returns_tool_error(self):
-        srv = make_server(self.repo)
-        with self.assertRaises(ToolError):
-            self.run_async(
-                srv.call_tool("codebase_search", {"query": "x", "path": ".."})
-            )
-
-    def test_absolute_search_path_outside_root_succeeds(self):
-        outside = Path(self.tmp.name) / "outside"
-        outside.mkdir()
-        srv = make_server(self.repo)
-
-        result = self.run_async(
-            srv.call_tool(
-                "codebase_search", {"query": "x", "path": str(outside)}
-            )
-        )
-
-        self.assertFalse(result.is_error)
-        self.assertEqual(result.structured_content["data"]["exit_code"], 0)
-
-    def test_unsupported_search_flag_returns_tool_error(self):
-        srv = make_server(self.repo)
-        with self.assertRaises(ToolError):
-            self.run_async(
-                srv.call_tool(
-                    "codebase_search", {"query": "x", "flags": ["--exclude"]}
-                )
-            )
-
-    def test_missing_rg_returns_tool_error(self):
-        srv = server.create_server(
-            executable=str(FAKE_PI),
-            rg_executable="/definitely/missing/rg",
-            repository_root=self.repo,
-        )
-        with self.assertRaises(ToolError):
-            self.run_async(srv.call_tool("codebase_search", {"query": "x"}))
-
-    def test_agent_failure_returns_tool_error(self):
-        error = agent_runner.AgentError(
-            "pi run ended with outcome retryable: fake pi failure",
-            returncode=3,
-            detail="fake pi failure",
-        )
-        with patch.object(agent_runner, "run_agent", AsyncMock(side_effect=error)):
-            srv = make_server()
-            with self.assertRaises(ToolError) as cm:
-                self.run_async(
-                    srv.call_tool(
-                        "codebase_retrieval",
-                        {"repository_path": str(self.repo), "query": "q"},
-                    )
-                )
-            self.assertIn("fake pi failure", str(cm.exception))
-
-    def test_timeout_returns_tool_error(self):
-        with patch.object(
-            agent_runner, "run_agent", AsyncMock(side_effect=asyncio.TimeoutError())
+        with (
+            patch.object(server.asyncio, "create_subprocess_exec", AsyncMock(return_value=process)),
+            patch.object(server.asyncio, "wait_for", side_effect=wait_for_timeout),
+            patch.object(server, "_kill_process_group", AsyncMock()),
+            self.assertRaisesRegex(ToolError, "TIMEOUT"),
         ):
-            srv = make_server()
-            with self.assertRaises(ToolError) as cm:
-                self.run_async(
-                    srv.call_tool(
-                        "codebase_retrieval",
-                        {"repository_path": str(self.repo), "query": "q"},
-                    )
-                )
-        self.assertIn("TimeoutError", str(cm.exception))
-
-    # ---- 6. Cancellation propagation -----------------------------------
-
-    def test_cancellation_propagates_during_runner(self):
-        async def scenario():
-            started = asyncio.Event()
-            cancelled = asyncio.Event()
-
-            async def wait_forever(*args, **kwargs):
-                started.set()
-                try:
-                    await asyncio.Event().wait()
-                except asyncio.CancelledError:
-                    cancelled.set()
-                    raise
-
-            with patch.object(agent_runner, "run_agent", side_effect=wait_forever):
-                srv = make_server()
-                task = asyncio.create_task(
-                    srv.call_tool(
-                        "codebase_retrieval",
-                        {"repository_path": str(self.repo), "query": "q"},
-                    )
-                )
-                await started.wait()
-                task.cancel()
-                with self.assertRaises(asyncio.CancelledError):
-                    await task
-                self.assertTrue(cancelled.is_set())
-
-        self.run_async(scenario())
-
-    def test_cancellation_propagates_during_retrieval_processing(self):
-        async def scenario():
-            started = asyncio.Event()
-            cancelled = asyncio.Event()
-
-            class BlockingProcessor:
-                async def process_retrieval(self, query, result, goal=None):
-                    started.set()
-                    try:
-                        await asyncio.Event().wait()
-                    except asyncio.CancelledError:
-                        cancelled.set()
-                        raise
-
-            srv = make_server(processor_factory=lambda _: BlockingProcessor())
-            task = asyncio.create_task(
-                srv.call_tool(
-                    "codebase_retrieval",
-                    {"repository_path": str(self.repo), "query": "q"},
-                )
-            )
-            await started.wait()
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-            self.assertTrue(cancelled.is_set())
-
-        self.run_async(scenario())
-
-    def test_cancellation_propagates_during_search_processing(self):
-        async def scenario():
-            started = asyncio.Event()
-            cancelled = asyncio.Event()
-
-            class BlockingProcessor:
-                async def process_search(self, *args, **kwargs):
-                    started.set()
-                    try:
-                        await asyncio.Event().wait()
-                    except asyncio.CancelledError:
-                        cancelled.set()
-                        raise
-
-            srv = make_server(
-                self.repo, processor_factory=lambda _: BlockingProcessor()
-            )
-            task = asyncio.create_task(
-                srv.call_tool(
-                    "codebase_search",
-                    {"query": "hello"},
-                )
-            )
-            await started.wait()
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-            self.assertTrue(cancelled.is_set())
-
-        self.run_async(scenario())
-
-    def test_unknown_tool_returns_error(self):
-        srv = make_server()
-        with self.assertRaises(ToolError):
-            self.run_async(
-                srv.call_tool(
-                    "nope", {"repository_path": str(self.repo), "query": "q"}
-                )
-            )
-
-    # ---- 7. Lifespan and Client Reuse ---------------------------------
-
-    def test_lifespan_creates_and_shares_single_client(self):
-        async def scenario():
-            fake_client = FakeClientWithCounters()
-            factory_calls = 0
-
-            def client_factory():
-                nonlocal factory_calls
-                factory_calls += 1
-                fake_client.created += 1
-                return fake_client
-
-            srv = make_server(self.repo, client_factory=client_factory)
-            self.assertEqual(fake_client.created, 0)
-
-            async with srv.settings.lifespan(srv) as state:
-                self.assertEqual(factory_calls, 1)
-                self.assertEqual(fake_client.created, 1)
-                self.assertEqual(fake_client.closed, 0)
-
-                # First call: retrieval reuses client
-                res1 = await srv.call_tool(
-                    "codebase_retrieval",
-                    {"repository_path": str(self.repo), "query": "q"},
-                )
-                self.assertFalse(res1.is_error)
-                self.assertEqual(fake_client.closed, 0)
-
-                # Second call: search reuses same client
-                res2 = await srv.call_tool("codebase_search", {"query": "hello"})
-                self.assertFalse(res2.is_error)
-                self.assertEqual(fake_client.closed, 0)
-
-                # Third call: another search reuses same client
-                res3 = await srv.call_tool("codebase_search", {"query": "nomatch"})
-                self.assertFalse(res3.is_error)
-                self.assertEqual(fake_client.closed, 0)
-                self.assertEqual(factory_calls, 1)
-
-            # Shutdown closes client exactly once
-            self.assertEqual(fake_client.closed, 1)
-
-        self.run_async(scenario())
-
-    def _client_tracker(self, closed_raises=False):
-        clients = []
-
-        def factory():
-            c = FakeClientWithCounters()
-            if closed_raises:
-                async def boom():
-                    c.closed += 1
-                    raise RuntimeError("close failed")
-
-                c.aclose = boom
-            clients.append(c)
-            return c
-
-        return clients, factory
-
-    def test_direct_call_client_closed_once_per_call(self):
-        async def scenario():
-            clients, factory = self._client_tracker()
-            srv = make_server(self.repo, client_factory=factory)
-            for pattern in ("hello", "nomatch"):
-                res = await srv.call_tool("codebase_search", {"query": pattern})
-                self.assertFalse(res.is_error)
-            res = await srv.call_tool(
-                "codebase_retrieval",
-                {"repository_path": str(self.repo), "query": "q"},
-            )
-            self.assertFalse(res.is_error)
-            self.assertEqual([c.closed for c in clients], [1, 1, 1])
-
-        self.run_async(scenario())
-
-    def test_direct_call_client_closed_once_when_processing_raises(self):
-        async def scenario():
-            clients, factory = self._client_tracker()
-            srv = make_server(self.repo, client_factory=factory)
-            with patch.object(
-                server.OutputProcessor,
-                "process_search",
-                AsyncMock(side_effect=RuntimeError("processing failed")),
-            ):
-                with self.assertRaises(Exception) as cm:
-                    await srv.call_tool("codebase_search", {"query": "hello"})
-            self.assertIn("processing failed", str(cm.exception))
-            self.assertEqual([c.closed for c in clients], [1])
-
-        self.run_async(scenario())
-
-    def test_in_flight_direct_call_survives_lifespan_start(self):
-        async def scenario():
-            clients, factory = self._client_tracker()
-            srv = make_server(self.repo, client_factory=factory)
-            entered = asyncio.Event()
-            release = asyncio.Event()
-            original = server.OutputProcessor.process_search
-
-            async def slow(self_, *args, **kwargs):
-                entered.set()
-                await release.wait()
-                return await original(self_, *args, **kwargs)
-
-            with patch.object(server.OutputProcessor, "process_search", slow):
-                task = asyncio.create_task(
-                    srv.call_tool("codebase_search", {"query": "hello"})
-                )
-                await asyncio.wait_for(entered.wait(), 5)
-                async with srv.settings.lifespan(srv):
-                    self.assertEqual(len(clients), 2)
-                    release.set()
-                    res = await task
-                    self.assertFalse(res.is_error)
-                    self.assertEqual(clients[0].closed, 1)
-                    self.assertEqual(clients[1].closed, 0)
-            self.assertEqual([c.closed for c in clients], [1, 1])
-
-        self.run_async(scenario())
-
-    def test_lifespan_client_shared_and_not_closed_per_call(self):
-        async def scenario():
-            clients, factory = self._client_tracker()
-            srv = make_server(self.repo, client_factory=factory)
-            async with srv.settings.lifespan(srv):
-                res = await srv.call_tool("codebase_search", {"query": "hello"})
-                self.assertFalse(res.is_error)
-                res = await srv.call_tool(
-                    "codebase_retrieval",
-                    {"repository_path": str(self.repo), "query": "q"},
-                )
-                self.assertFalse(res.is_error)
-                self.assertEqual(len(clients), 1)
-                self.assertEqual(clients[0].closed, 0)
-            self.assertEqual(clients[0].closed, 1)
-
-        self.run_async(scenario())
-
-    def test_aclose_failure_does_not_mask_result(self):
-        async def scenario():
-            clients, factory = self._client_tracker(closed_raises=True)
-            srv = make_server(self.repo, client_factory=factory)
-            res = await srv.call_tool("codebase_search", {"query": "hello"})
-            self.assertFalse(res.is_error)
-            self.assertEqual(clients[0].closed, 1)
-
-        self.run_async(scenario())
-
-    def test_aclose_failure_does_not_mask_call_error(self):
-        async def scenario():
-            clients, factory = self._client_tracker(closed_raises=True)
-            srv = make_server(self.repo, client_factory=factory)
-            with patch.object(
-                server.OutputProcessor,
-                "process_search",
-                AsyncMock(side_effect=RuntimeError("processing failed")),
-            ):
-                with self.assertRaises(Exception) as cm:
-                    await srv.call_tool("codebase_search", {"query": "hello"})
-            self.assertIn("processing failed", str(cm.exception))
-            self.assertNotIn("close failed", str(cm.exception))
-            self.assertEqual(clients[0].closed, 1)
-
-        self.run_async(scenario())
-
-    def test_cancellation_propagates_when_aclose_fails(self):
-        async def scenario():
-            clients, factory = self._client_tracker(closed_raises=True)
-            srv = make_server(self.repo, client_factory=factory)
-            with patch.object(
-                server.OutputProcessor,
-                "process_search",
-                AsyncMock(side_effect=asyncio.CancelledError()),
-            ):
-                with self.assertRaises(asyncio.CancelledError):
-                    await srv.call_tool("codebase_search", {"query": "hello"})
-            self.assertEqual(clients[0].closed, 1)
-
-        self.run_async(scenario())
-
-    def test_lifespan_closes_client_on_failure(self):
-        async def scenario():
-            fake_client = FakeClientWithCounters()
-            srv = make_server(self.repo, client_factory=lambda: fake_client)
-            async with srv.settings.lifespan(srv):
-                with self.assertRaises(ToolError):
-                    await srv.call_tool("codebase_search", {"query": "bad["})
-                self.assertEqual(fake_client.closed, 0)
-            self.assertEqual(fake_client.closed, 1)
-
-        self.run_async(scenario())
-
-    def test_no_production_global_client_exists(self):
-        self.assertFalse(hasattr(server, "_client"))
-        self.assertFalse(hasattr(server, "client"))
-        self.assertFalse(hasattr(server, "CLIENT"))
-        self.assertFalse(hasattr(server, "GLOBAL_CLIENT"))
-
-    def test_client_creation_helper_disables_retries(self):
-        from auggie_mcp.output_processing import JevConfig
-        from typesafe_sdk import RetryPolicy
-
-        cfg = JevConfig(api_key="sk-test-key-123")
-        with patch("auggie_mcp.output_processing.AsyncTypeSafeClient") as mock_cls:
-            create_typesafe_client(cfg)
-            mock_cls.assert_called_once_with(
-                api_key=cfg.api_key,
-                model=cfg.model,
-                retry=RetryPolicy(max_retries=0),
-                timeout=cfg.timeout_seconds,
-            )
-
-    # ---- 8. Entry points and configuration -----------------------------
-
-    def test_main_module_has_run_entry(self):
-        import importlib
-
-        main = importlib.import_module("auggie_mcp.__main__")
-        self.assertTrue(callable(getattr(main, "main", None)) or hasattr(main, "main"))
-
-    def test_package_console_entrypoint_configured(self):
-        import tomllib
-
-        with open("pyproject.toml", "rb") as fh:
-            data = tomllib.load(fh)
-        scripts = data["project"]["scripts"]
-        self.assertIn("auggie-mcp", scripts)
-        self.assertTrue(scripts["auggie-mcp"].startswith("auggie_mcp.launch:"))
-
-    def test_dependency_stays_on_mcp_v2(self):
-        import tomllib
-
-        with open("pyproject.toml", "rb") as fh:
-            data = tomllib.load(fh)
-        self.assertIn("mcp>=2.3,<3", data["project"]["dependencies"])
-
-    def test_no_production_pi_environment_switches(self):
-        self.assertFalse(hasattr(server, "PI_EXECUTABLE"))
-        self.assertFalse(hasattr(server, "PI_EXTRA_ARGS"))
-
-    def test_no_extra_transports(self):
-        import auggie_mcp.server as s
-
-        self.assertTrue(hasattr(s, "run"))
-        self.assertFalse(hasattr(s, "run_sse"))
-        self.assertFalse(hasattr(s, "run_http"))
-
-    # ---- 9. Contract test with fake agent CLI over stdio ---------------------
-
-    def start_stdio_server(self):
-        """Start the real server over stdio; return a JSON-RPC request function."""
-        env = dict(os.environ)
-        fake_bin_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(fake_bin_dir.cleanup)
-        fake_pi = Path(fake_bin_dir.name) / "pi"
-        fake_pi.symlink_to(FAKE_PI)
-        fake_rg = Path(fake_bin_dir.name) / "rg"
-        fake_rg.symlink_to(FAKE_RG)
-        env["PATH"] = fake_bin_dir.name + os.pathsep + env.get("PATH", "")
-        # Ensure fail-open for test determinism without real API key
-        env.pop("TYPESAFE_API_KEY", None)
-
-        proc = subprocess.Popen(
-            [os.sys.executable, "-m", "auggie_mcp"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            cwd=str(TESTS_DIR.parent),
-        )
-
-        def request(req):
-            proc.stdin.write((json.dumps(req) + "\n").encode())
-            proc.stdin.flush()
-            line = proc.stdout.readline()
-            return json.loads(line)
-
-        def stop():
-            proc.stdin.close()
-            if proc.poll() is None:
-                proc.kill()
-            proc.wait()
-            proc.stdout.close()
-            proc.stderr.close()
-
-        self.addCleanup(stop)
-        return request
-
-    def test_stdio_initialize_is_refused(self):
-        request = self.start_stdio_server()
-        resp = request(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "clientInfo": {"name": "test", "version": "0"},
-                },
-            }
-        )
-        self.assertEqual(resp["error"]["code"], -32022)
-        self.assertEqual(resp["error"]["data"]["supported"], ["2026-07-28"])
-        self.assertEqual(resp["error"]["data"]["requested"], "2025-06-18")
-
-    def test_contract_stdio_discovery_and_call(self):
-        """Start the real server over stdio and speak minimal JSON-RPC."""
-        request = self.start_stdio_server()
-        meta = {
-            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-            "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "0"},
-            "io.modelcontextprotocol/clientCapabilities": {},
-        }
-
-        # 1. server/discover at 2026-07-28
-        resp = request(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "server/discover",
-                "params": {"_meta": meta},
-            }
-        )
-        self.assertIn("result", resp)
-        self.assertEqual(
-            resp["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["version"],
-            "0.5.0",
-        )
-
-        # 2. tools/list
-        resp = request(
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/list",
-                "params": {"_meta": meta},
-            }
-        )
-        tools = resp["result"]["tools"]
-        names = [t["name"] for t in tools]
-        self.assertEqual(
-            names,
-            [
-                "codebase_retrieval",
-                "codebase_search",
-                "index_status",
+            self.call(
+                server.create_server(app_config=cfg, repository_root=self.repo),
                 "index_update",
-            ],
-        )
-
-        r_tool = next(t for t in tools if t["name"] == "codebase_retrieval")
-        s_tool = next(t for t in tools if t["name"] == "codebase_search")
-
-        self.assertIn("goal", r_tool["inputSchema"]["properties"])
-        self.assertIn("goal", s_tool["inputSchema"]["properties"])
-        self.assertEqual(
-            set(r_tool["outputSchema"]["properties"]),
-            {"tool", "data", "processing"},
-        )
-        self.assertEqual(
-            set(s_tool["outputSchema"]["properties"]),
-            {"tool", "data", "processing"},
-        )
-
-        # 3. tools/call: codebase_retrieval
-        resp = request(
-            {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {
-                    "_meta": meta,
-                    "name": "codebase_retrieval",
-                    "arguments": {
-                        "repository_path": str(self.repo),
-                        "query": "what is here?",
-                    },
-                },
-            }
-        )
-        self.assertFalse(resp["result"]["isError"])
-        sc_r = resp["result"]["structuredContent"]
-        self.assertEqual(sc_r["tool"], "codebase_retrieval")
-        self.assertEqual(sc_r["data"]["result"], "Fake final answer.")
-        self.assertIn("processing", sc_r)
-        self.assertEqual(sc_r["processing"]["status"], "unclassified")
-        self.assertEqual(sc_r["processing"]["retention"], "failed_open")
-
-        # 4. tools/call: codebase_search
-        resp = request(
-            {
-                "jsonrpc": "2.0",
-                "id": 4,
-                "method": "tools/call",
-                "params": {
-                    "_meta": meta,
-                    "name": "codebase_search",
-                    "arguments": {
-                        "query": "hello",
-                    },
-                },
-            }
-        )
-        self.assertFalse(resp["result"]["isError"])
-        sc_s = resp["result"]["structuredContent"]
-        self.assertEqual(sc_s["tool"], "codebase_search")
-        self.assertEqual(sc_s["data"]["exit_code"], 0)
-        self.assertIn("processing", sc_s)
-        self.assertEqual(sc_s["processing"]["status"], "unclassified")
-        self.assertEqual(sc_s["processing"]["retention"], "failed_open")
-
-
-class TelemetryServerTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.repo = Path(self.tmp.name) / "repo"
-        self.repo.mkdir()
-        (self.repo / "hello.txt").write_text("hello world\n")
-        self.tdir = Path(self.tmp.name) / "telemetry"
-        env = patch.dict(os.environ, {"AUGGIE_TELEMETRY_DIR": str(self.tdir)})
-        env.start()
-        self.addCleanup(env.stop)
-        os.environ.pop("AUGGIE_TELEMETRY", None)
-
-    def run_async(self, coro):
-        return asyncio.run(coro)
-
-    def events(self):
-        out = []
-        for path in sorted(self.tdir.glob("events-*.jsonl")):
-            out.extend(json.loads(l) for l in path.read_text().splitlines())
-        return out
-
-    def retrieve(self, srv):
-        return self.run_async(
-            srv.call_tool(
-                "codebase_retrieval",
-                {"repository_path": str(self.repo), "query": "q", "goal": "g"},
+                {"repository_path": str(self.repo)},
             )
+
+    def test_semantic_parameters_validate_as_invalid_argument(self):
+        for params in ({"top_k": 0}, {"context_lines": 21}):
+            with self.subTest(params=params), self.assertRaisesRegex(ToolError, "INVALID_ARGUMENT"):
+                self.call(make_server(self.repo), "semantic_search", {
+                    "repository_path": str(self.repo), "query": "q", **params
+                })
+
+    def test_error_mapping(self):
+        cases = [
+            ("INVALID_PATH", "grep_search", {"repository_path": str(self.repo), "pattern": "x", "path": "missing"}, None),
+            ("INVALID_ARGUMENT", "semantic_search", {"repository_path": str(self.repo), "query": "x", "top_k": 0}, None),
+            ("INDEX_MISSING", "semantic_search", {"repository_path": str(self.repo), "query": "x"}, semantic.IndexMissingError("missing index")),
+            ("INDEX_MODEL_MISMATCH", "semantic_search", {"repository_path": str(self.repo), "query": "x"}, semantic.ModelMismatchError("wrong model")),
+            ("INDEX_BUSY", "index_update", {"repository_path": str(self.repo)}, locking.IndexBusyError("busy")),
+            ("MISSING_API_KEY", "index_update", {"repository_path": str(self.repo)}, embed.MissingApiKeyError("missing key")),
+            ("EMBED_FAILED", "index_update", {"repository_path": str(self.repo)}, embed.EmbedError("HTTP 503")),
+            ("TIMEOUT", "grep_search", {"repository_path": str(self.repo), "pattern": "x"}, TimeoutError("too slow")),
+            ("RETRIEVAL_BUSY", "codebase_retrieval", {"repository_path": str(self.repo), "query": "x"}, retrieval.RetrievalBusyError("busy")),
+            ("REPO_MODIFIED", "codebase_retrieval", {"repository_path": str(self.repo), "query": "x"}, retrieval.RepoModifiedError("changed")),
+            ("BINARY_NOT_FOUND", "grep_search", {"repository_path": str(self.repo), "pattern": "x"}, FileNotFoundError("rg executable not found")),
+        ]
+        for code, name, args, error in cases:
+            with self.subTest(code=code):
+                if error is not None:
+                    target = {
+                        "semantic_search": (semantic, "semantic_search"),
+                        "index_update": (server, "_run_index_update"),
+                        "codebase_retrieval": (retrieval, "run_agent"),
+                        "grep_search": (server.grep, "grep_search"),
+                    }[name]
+                    with patch.object(target[0], target[1], side_effect=error), self.assertRaisesRegex(
+                        ToolError, code
+                    ):
+                        self.call(make_server(self.repo), name, args)
+                else:
+                    with self.assertRaisesRegex(ToolError, code):
+                        self.call(make_server(self.repo), name, args)
+
+    def test_retrieval_truncation_archives_full_answer(self):
+        full = ("line\n" * 20000)
+        with patch.object(retrieval, "run_agent", AsyncMock(return_value={
+            "answer": full, "driver": "pi", "duration_ms": 1,
+            "repo_modified": False, "git_check": "skipped",
+        })):
+            result = self.call(make_server(self.repo), "codebase_retrieval", {
+                "repository_path": str(self.repo), "query": "q"
+            })
+        data = result.structured_content
+        self.assertTrue(data["truncated"])
+        self.assertTrue(Path(data["archive_path"]).is_file())
+        self.assertLess(len(data["answer"].encode()), 64 * 1024)
+
+    def test_disabled_config_telemetry_writes_no_server_event(self):
+        telemetry_dir = self.repo / "telemetry"
+        cfg = config.Config(telemetry=config.TelemetryConfig(
+            enabled=False, dir=telemetry_dir, retention_days=2
+        ))
+        with patch.dict(os.environ, {"AUGGIE_TELEMETRY": "1", "AUGGIE_TELEMETRY_DIR": str(telemetry_dir / "env")}):
+            self.call(server.create_server(app_config=cfg, rg_executable=str(FAKE_RG)), "grep_search", {
+                "repository_path": str(self.repo), "pattern": "hello"
+            })
+        self.assertFalse(telemetry_dir.exists())
+
+    def test_toml_telemetry_directory_is_used_for_server_events(self):
+        telemetry_dir = self.repo / "from-config"
+        config_file = self.repo / "config.toml"
+        config_file.write_text(
+            f'[telemetry]\nenabled = true\ndir = "{telemetry_dir}"\nretention_days = 4\n'
+        )
+        cfg = config.load(config_file, environ={})
+        with patch.dict(os.environ, {"AUGGIE_TELEMETRY_DIR": str(self.repo / "from-env")}):
+            self.call(server.create_server(app_config=cfg, rg_executable=str(FAKE_RG)), "grep_search", {
+                "repository_path": str(self.repo), "pattern": "hello"
+            })
+        self.assertEqual(len(list(telemetry_dir.glob("events-*.jsonl"))), 1)
+        self.assertFalse((self.repo / "from-env").exists())
+
+    def test_server_startup_prunes_configured_telemetry_directory_and_retention(self):
+        telemetry_dir = self.repo / "configured-telemetry"
+        config_file = self.repo / "config.toml"
+        config_file.write_text(
+            f'[telemetry]\nenabled = true\ndir = "{telemetry_dir}"\nretention_days = 4\n'
+        )
+        cfg = config.load(config_file, environ={})
+        srv = server.create_server(
+            app_config=cfg, repository_root=self.repo, rg_executable=str(FAKE_RG)
         )
 
-    def assert_stage_keys(self, event):
-        for key in ("runner", "processing", "total"):
-            self.assertIn(key, event["durations_ms"])
+        async def run():
+            async with Client(
+                srv,
+                mode="2026-07-28",
+                client_info=Implementation(name="telemetry-config-test", version="1"),
+            ) as client:
+                await client.list_tools()
 
-    def test_retrieval_ok_emits_one_event(self):
-        result = self.retrieve(make_server())
-        (event,) = self.events()
-        sc = result.structured_content
-        self.assertEqual(event["source"], "mcp")
-        self.assertEqual(event["tool"], "codebase_retrieval")
-        self.assertEqual(event["outcome"], "ok")
-        self.assertIsNone(event["error"])
-        self.assertEqual(
-            event["input"],
-            {"repository_path": str(self.repo), "query": "q", "goal": "g"},
-        )
-        self.assert_stage_keys(event)
-        self.assertEqual(
-            event["runner"],
-            {
-                "exit_code": 0,
-                "stdout_bytes": len("Fake final answer.".encode()),
-                "stderr_bytes": 0,
-            },
-        )
-        proc = event["processing"]
-        for key in ("status", "retention", "estimated_tokens"):
-            self.assertEqual(proc[key], sc["processing"][key])
-        self.assertEqual(proc["output_bytes"], len(sc["data"]["result"].encode()))
+        with patch.object(telemetry, "prune_old_files", wraps=telemetry.prune_old_files) as prune:
+            asyncio.run(run())
+        prune.assert_called_once_with(enabled=True, directory=telemetry_dir, retention=4)
 
-    def test_retrieval_error_records_tool_error_and_runner(self):
-        error = agent_runner.AgentError(
-            "pi run ended with outcome retryable: fake pi failure",
-            returncode=3,
-            detail="fake pi failure",
+    def test_unicode_retrieval_response_serialization_fits_output_limit(self):
+        full = "é\n" * 12000
+        with patch.object(retrieval, "run_agent", AsyncMock(return_value={
+            "answer": full, "driver": "pi", "duration_ms": 1,
+            "repo_modified": False, "git_check": "skipped",
+        })):
+            result = self.call(make_server(self.repo), "codebase_retrieval", {
+                "repository_path": str(self.repo), "query": "q"
+            })
+        data = result.structured_content
+        self.assertTrue(data["truncated"])
+        self.assertLessEqual(
+            len(output_limits.serialize_json(data).encode("utf-8")),
+            output_limits.MAX_OUTPUT_BYTES,
         )
-        with patch.object(agent_runner, "run_agent", AsyncMock(side_effect=error)):
-            with self.assertRaises(ToolError) as cm:
-                self.retrieve(make_server())
-        (event,) = self.events()
-        self.assertEqual(event["outcome"], "error")
-        self.assertEqual(event["error"]["type"], "ToolError")
-        self.assertIn(event["error"]["message"], str(cm.exception))
-        self.assertEqual(
-            event["runner"],
-            {
-                "exit_code": 3,
-                "stdout_bytes": 0,
-                "stderr_bytes": len(b"fake pi failure"),
-            },
+        archived = json.loads(Path(data["archive_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(archived["answer"], full)
+
+    def test_index_subprocess_structured_embed_error_preserves_status(self):
+        fake_python = self.repo / "fake-python"
+        fake_python.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            "sys.stdout.write(json.dumps({'error': {'code': 'EMBED_FAILED', "
+            "'message': 'quota exceeded', 'http_status': 429}}))\n"
+            "sys.exit(2)\n"
         )
-        self.assertIsNone(event["processing"])
-        self.assertIn("total", event["durations_ms"])
+        fake_python.chmod(0o755)
+        with patch.object(server.sys, "executable", str(fake_python)), self.assertRaises(
+            ToolError
+        ) as raised:
+            self.call(make_server(self.repo), "index_update", {
+                "repository_path": str(self.repo)
+            })
+        self.assertIn("EMBED_FAILED", str(raised.exception))
+        self.assertIn("HTTP 429", str(raised.exception))
 
-    def test_retrieval_other_error_leaves_runner_null(self):
-        with patch.object(
-            agent_runner, "run_agent", AsyncMock(side_effect=asyncio.TimeoutError())
-        ):
-            with self.assertRaises(ToolError):
-                self.retrieve(make_server())
-        (event,) = self.events()
-        self.assertEqual(event["outcome"], "error")
-        self.assertIsNone(event["runner"])
+    def test_real_cli_warning_does_not_break_structured_embed_error(self):
+        home = self.repo / "home"
+        config_dir = home / ".auggie"
+        config_dir.mkdir(parents=True)
+        (config_dir / "config.toml").write_text('[search]\nmode = "classic"\n')
+        cfg = config.Config(telemetry=config.TelemetryConfig(enabled=False))
 
-    def test_retrieval_cancelled_emits_one_event(self):
+        with patch.dict(os.environ, {
+            "HOME": str(home),
+            "AUGGIE_TEST_INDEX_EMBED_ERROR_STATUS": "429",
+            "AUGGIE_TELEMETRY": "0",
+        }), self.assertRaises(ToolError) as raised:
+            self.call(server.create_server(app_config=cfg), "index_update", {
+                "repository_path": str(self.repo)
+            })
+
+        self.assertIn("EMBED_FAILED", str(raised.exception))
+        self.assertIn("HTTP 429", str(raised.exception))
+
+    def test_missing_directory_from_cli_subprocess_maps_to_invalid_path(self):
         async def scenario():
-            started = asyncio.Event()
+            original_spawn = asyncio.create_subprocess_exec
 
-            async def wait_forever(*args, **kwargs):
-                started.set()
-                await asyncio.Event().wait()
+            async def remove_before_cli(*args, **kwargs):
+                import shutil
+                shutil.rmtree(self.repo)
+                return await original_spawn(*args, **kwargs)
 
-            with patch.object(agent_runner, "run_agent", side_effect=wait_forever):
-                task = asyncio.create_task(
-                    make_server().call_tool(
-                        "codebase_retrieval",
-                        {"repository_path": str(self.repo), "query": "q"},
-                    )
-                )
-                await started.wait()
+            cfg = config.Config(telemetry=config.TelemetryConfig(enabled=False))
+            srv = server.create_server(app_config=cfg, repository_root=self.repo)
+            with (
+                patch.dict(os.environ, {"HOME": str(self.repo.parent), "AUGGIE_TELEMETRY": "0"}),
+                patch.object(asyncio, "create_subprocess_exec", side_effect=remove_before_cli),
+                self.assertRaisesRegex(ToolError, "INVALID_PATH"),
+            ):
+                await srv.call_tool("index_update", {"repository_path": str(self.repo)})
+
+        asyncio.run(scenario())
+
+    def test_embed_error_message_includes_status_when_missing(self):
+        error = embed.EmbedError("quota exceeded", status=429)
+        self.assertIn("HTTP 429", str(server._tool_error(error)))
+
+    def fake_python(self, source, name="fake-python"):
+        path = self.repo / name
+        path.write_text("#!/usr/bin/env python3\n" + source)
+        path.chmod(0o755)
+        return path
+
+    @staticmethod
+    def process_is_running(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        stat_path = Path(f"/proc/{pid}/stat")
+        return not (stat_path.exists() and stat_path.read_text().split()[2] == "Z")
+
+    def test_index_subprocess_timeout_and_cancellation_kill_process_group(self):
+        pid_path = self.repo / "grandchild.pid"
+        script = self.fake_python(
+            "import subprocess, sys, time\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            f"open({str(pid_path)!r}, 'w').write(str(child.pid))\n"
+            "time.sleep(60)\n"
+        )
+
+        async def wait_pid():
+            for _ in range(200):
+                if pid_path.exists():
+                    return int(pid_path.read_text())
+                await asyncio.sleep(0.01)
+            self.fail("fake index child did not start")
+
+        async def scenario():
+            with (
+                patch.object(server.sys, "executable", str(script)),
+                self.assertRaises(TimeoutError),
+            ):
+                await server._run_index_update(str(self.repo), False, timeout_s=0.1)
+            timeout_pid = int(pid_path.read_text())
+            self.assertFalse(self.process_is_running(timeout_pid))
+
+            pid_path.unlink()
+            with patch.object(server.sys, "executable", str(script)):
+                task = asyncio.create_task(server._run_index_update(str(self.repo), False))
+                cancel_pid = await wait_pid()
                 task.cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await task
+            for _ in range(100):
+                if not self.process_is_running(cancel_pid):
+                    break
+                await asyncio.sleep(0.01)
+            self.assertFalse(self.process_is_running(cancel_pid))
 
-        self.run_async(scenario())
-        (event,) = self.events()
-        self.assertEqual(event["outcome"], "cancelled")
-        self.assertIsNone(event["error"])
-        self.assertIn("total", event["durations_ms"])
+        asyncio.run(scenario())
 
-    def search(self, srv, pattern, **extra):
-        return self.run_async(
-            srv.call_tool("codebase_search", {"query": pattern, **extra})
+    def test_index_subprocess_busy_and_malformed_json_have_defined_errors(self):
+        busy = self.fake_python(
+            "import json, sys\n"
+            "sys.stderr.write(json.dumps({'error': {'code': 'INDEX_BUSY', 'message': 'locked', 'http_status': None}}))\n"
+            "sys.exit(3)\n",
+            "fake-busy-python",
         )
-
-    def test_search_ok_emits_one_event(self):
-        result = self.search(make_server(self.repo), "hello", flags=["-F"])
-        (event,) = self.events()
-        sc = result.structured_content
-        self.assertEqual(event["source"], "mcp")
-        self.assertEqual(event["tool"], "codebase_search")
-        self.assertEqual(event["outcome"], "ok")
-        self.assertEqual(
-            event["input"],
-            {
-                "query": "hello",
-                "mode": "exact",
-                "path": ".",
-                "flags": ["-F"],
-                "goal": None,
-                "repository_path": str(self.repo),
-            },
+        malformed = self.fake_python(
+            "import sys\nsys.stdout.write('not-json')\nsys.exit(0)\n",
+            "fake-malformed-python",
         )
-        self.assert_stage_keys(event)
-        self.assertEqual(event["runner"]["exit_code"], 0)
-        self.assertEqual(
-            event["runner"]["stdout_bytes"], len(sc["data"]["stdout"].encode())
-        )
-        self.assertEqual(
-            event["runner"]["stderr_bytes"], len(sc["data"]["stderr"].encode())
-        )
-        proc = event["processing"]
-        for key in ("status", "retention", "estimated_tokens"):
-            self.assertEqual(proc[key], sc["processing"][key])
-        self.assertEqual(proc["output_bytes"], len(sc["data"]["stdout"].encode()))
-
-    def test_search_no_match_outcome(self):
-        self.search(make_server(self.repo), "nomatch")
-        (event,) = self.events()
-        self.assertEqual(event["outcome"], "no_match")
-        self.assertEqual(event["runner"]["exit_code"], 1)
-        self.assert_stage_keys(event)
-
-    def test_search_exit_two_records_error(self):
-        with self.assertRaises(ToolError) as cm:
-            self.search(make_server(self.repo), "bad[")
-        (event,) = self.events()
-        self.assertEqual(event["outcome"], "error")
-        self.assertEqual(event["error"]["type"], "ToolError")
-        self.assertIn(event["error"]["message"], str(cm.exception))
-        self.assertEqual(event["runner"]["exit_code"], 2)
-        self.assertIsNone(event["processing"])
-
-    def test_search_cancelled_emits_one_event(self):
-        async def scenario():
-            started = asyncio.Event()
-
-            class BlockingProcessor:
-                async def process_search(self, *args, **kwargs):
-                    started.set()
-                    await asyncio.Event().wait()
-
-            srv = make_server(
-                self.repo, processor_factory=lambda _: BlockingProcessor()
-            )
-            task = asyncio.create_task(
-                srv.call_tool("codebase_search", {"query": "hello"})
-            )
-            await started.wait()
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-
-        self.run_async(scenario())
-        (event,) = self.events()
-        self.assertEqual(event["outcome"], "cancelled")
-
-    def test_disabled_writes_nothing_and_results_match(self):
-        on = self.search(make_server(self.repo), "hello")
-        on_retrieval = self.retrieve(make_server())
-        self.assertEqual(len(self.events()), 2)
-        shutil.rmtree(self.tdir)
-        with patch.dict(os.environ, {"AUGGIE_TELEMETRY": "0"}):
-            off = self.search(make_server(self.repo), "hello")
-            off_retrieval = self.retrieve(make_server())
-        self.assertFalse(self.tdir.exists())
-        self.assertEqual(on.structured_content, off.structured_content)
-        self.assertEqual(
-            on_retrieval.structured_content, off_retrieval.structured_content
-        )
-
-    def test_unwritable_dir_leaves_results_and_errors_unchanged(self):
-        good = self.search(make_server(self.repo), "hello")
-        with self.assertRaises(ToolError) as good_err:
-            self.search(make_server(self.repo), "bad[")
-        blocker = Path(self.tmp.name) / "blocker"
-        blocker.write_text("x")
-        with patch.dict(
-            os.environ, {"AUGGIE_TELEMETRY_DIR": str(blocker / "sub")}
-        ):
-            bad = self.search(make_server(self.repo), "hello")
-            with self.assertRaises(ToolError) as bad_err:
-                self.search(make_server(self.repo), "bad[")
-        self.assertEqual(good.structured_content, bad.structured_content)
-        self.assertEqual(str(good_err.exception), str(bad_err.exception))
-
-    def test_lifespan_prunes_stale_files_at_startup(self):
-        self.tdir.mkdir(parents=True)
-        stale = self.tdir / "events-2000-01-01.jsonl"
-        stale.write_text("{}\n")
 
         async def scenario():
-            srv = make_server(self.repo)
-            async with srv.settings.lifespan(srv):
-                self.assertFalse(stale.exists())
-
-        self.run_async(scenario())
-
-    def test_lifespan_prunes_in_client_branches(self):
-        class PlainClient:
-            pass
-
-        for factory in (FakeClientWithCounters, PlainClient):
-            with self.subTest(factory=factory.__name__):
-                self.tdir.mkdir(parents=True, exist_ok=True)
-                stale = self.tdir / "events-2000-01-01.jsonl"
-                stale.write_text("{}\n")
-
-                async def scenario():
-                    srv = make_server(self.repo, client_factory=factory)
-                    async with srv.settings.lifespan(srv):
-                        self.assertFalse(stale.exists())
-
-                self.run_async(scenario())
-
-    def test_client_info_reads_ctx_defensively(self):
-        from types import SimpleNamespace as NS
-
-        ctx = NS(
-            session=NS(
-                client_params=NS(client_info=NS(name="claude-code", version="2.1"))
-            )
-        )
-        self.assertEqual(
-            server._client_info(ctx), {"name": "claude-code", "version": "2.1"}
-        )
-        self.assertIsNone(server._client_info(None))
-        self.assertIsNone(server._client_info(NS()))
-        self.assertIsNone(server._client_info(NS(session=NS(client_params=None))))
-        self.assertIsNone(
-            server._client_info(NS(session=NS(client_params=NS(client_info=None))))
-        )
-
-        class Boom:
-            @property
-            def session(self):
-                raise RuntimeError("boom")
-
-        self.assertIsNone(server._client_info(Boom()))
+            with patch.object(server.sys, "executable", str(busy)), self.assertRaises(
+                locking.IndexBusyError
+            ):
+                await server._run_index_update(str(self.repo), False)
+            with patch.object(server.sys, "executable", str(malformed)):
+                with self.assertRaisesRegex(RuntimeError, "invalid JSON"):
+                    await server._run_index_update(str(self.repo), False)
+                with self.assertRaisesRegex(ToolError, "INTERNAL_ERROR"):
+                    await make_server(self.repo).call_tool("index_update", {
+                        "repository_path": str(self.repo)
+                    })
+        asyncio.run(scenario())
 
 
 if __name__ == "__main__":

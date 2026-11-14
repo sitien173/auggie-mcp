@@ -8,17 +8,27 @@ Entries before the first public release were reconstructed from the Git history.
 
 ## [Unreleased]
 
+### SQLite-only rewrite breaking changes
+
+- Removed `codebase_search`; use `grep_search` for exact matches and `semantic_search` for concept search.
+- Removed the `goal` parameter from `codebase_retrieval`.
+- Removed Jev and TypeSafe output processing.
+- The new index file `.auggie/index-v2.sqlite` requires a one-time full re-embed. Older `.auggie/` files are not deleted automatically and must be removed manually if no longer needed.
+- Reduced the CLI to `index`, `status`, and `stats`.
+- Removed configuration keys warn once at startup and are ignored.
+- The server accepts the legacy `initialize` handshake.
+
 ### Breaking changes
 
-- The server speaks MCP protocol `2026-07-28` only, on `mcp` 2.3.0. A client that opens with `initialize` receives error `-32022`.
+- The server accepts the legacy `initialize` handshake alongside `server/discover`.
 - There is no default agent driver. Set `AUGGIE_AGENT_DRIVER` or `driver` in the `[agent]` table of `~/.auggie/config.toml`.
 - `AUGGIE_*` settings are read from `config.toml` sections.
 
 ### Added
 
-- Plugin packaging for Claude Code, Codex, agy, and pi, with root marketplaces, a shared MCP config, a pi extension, and the `auggie-retrieval` and `auggie-cli` skills under `plugin/skills`.
+- Plugin packaging for Claude Code, Codex, agy, and pi, with root marketplaces, a shared MCP config, and a pi extension.
 - The retrieval agent receives the system prompt and index hints.
-- `tools/list` responses are cacheable for one hour, and all four tools raise `ToolError` so clients see the real error text.
+- `tools/list` responses are cacheable for one hour, and all five tools raise `ToolError` so clients see the real error text.
 
 ### Changed
 

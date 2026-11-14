@@ -13,14 +13,8 @@ authors = [{ name = "Tien Ngo" }]
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=2.3,<3",
-    "typesafe-sdk",
-    "lancedb==0.33.0",
     "numpy==2.5.4",
-    "pyarrow==24.0.0",
-    "tqdm==4.68.3",
-    "tree-sitter==0.26.1",
     "voyageai==0.4.1",
-    "watchdog==7.1.0",
     "coding-agent-cli==0.1.0",
 ]
 
@@ -29,12 +23,14 @@ auggie-mcp = "auggie_mcp.launch:server"
 auggie = "auggie_mcp.launch:cli"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/auggie_mcp", "src/auggie"]
+packages = ["src/auggie_mcp"]
 
 [dependency-groups]
 dev = [
     "coverage>=7.16.2",
     "pytest",
+    "ruff",
+    "ty",
 ]
 
 [tool.coverage.run]
@@ -46,5 +42,11 @@ relative_files = true
 output = "coverage.xml"
 
 [tool.pytest.ini_options]
-testpaths = ["tests/semantic"]
+testpaths = ["tests"]
 addopts = "-ra -p no:cacheprovider"
+
+[tool.ruff]
+src = ["src"]
+
+[tool.ty.src]
+include = ["src"]

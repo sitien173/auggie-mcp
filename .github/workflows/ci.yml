@@ -24,8 +24,16 @@ jobs:
       - uses: astral-sh/setup-uv@v10.3.3
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
-      - name: Run tests
-        run: uv run --frozen --python ${{ matrix.python-version }} pytest tests
+      - name: Run tests with coverage
+        run: |
+          uv run --frozen --python ${{ matrix.python-version }} coverage run -m pytest tests
+          uv run --frozen --python ${{ matrix.python-version }} coverage report
+      - name: Check lint
+        run: uv run --frozen ruff check src tests scripts
+      - name: Check types
+        run: uv run --frozen ty check src
+      - name: Check versions
+        run: uv run --frozen python scripts/check_versions.py
 
   build:
     runs-on: ubuntu-latest

@@ -4,7 +4,7 @@ import os
 import stat
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from auggie_mcp import telemetry
@@ -40,7 +40,7 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(telemetry.retention_days({key: bad}), 30)
 
 
-NOW = datetime(2026, 11, 12, 15, 4, 5, 123000, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 12, 15, 4, 5, 123000, tzinfo=UTC)
 
 
 def _worker(directory, worker_id, count):
@@ -98,7 +98,7 @@ class AppendEventTest(unittest.TestCase):
         self.assertEqual(text, '{"a":1,"u":"é"}\n{"a":2}\n')
 
     def test_uses_utc_date_of_now(self):
-        late = datetime(2026, 11, 12, 23, 59, tzinfo=timezone.utc)
+        late = datetime(2026, 11, 12, 23, 59, tzinfo=UTC)
         telemetry.append_event({"a": 1}, environ=self.env, now=late)
         self.assertTrue((self.dir / "events-2026-11-12.jsonl").exists())
 
@@ -189,11 +189,11 @@ class CallRecordTest(unittest.TestCase):
     def read_events(self):
         files = list(self.dir.glob("events-*.jsonl"))
         self.assertEqual(len(files), 1)
-        return [json.loads(l) for l in files[0].read_text().splitlines()]
+        return [json.loads(line) for line in files[0].read_text().splitlines()]
 
     def test_finish_writes_schema_v1_event(self):
         rec = telemetry.CallRecord(
-            "mcp", "codebase_search", {"pattern": "x"}, environ=self.env
+            "mcp", "grep_search", {"pattern": "x"}, environ=self.env
         )
         self.assertTrue(rec.finish("ok", now=NOW))
         (event,) = self.read_events()
@@ -208,7 +208,7 @@ class CallRecordTest(unittest.TestCase):
         self.assertEqual(event["v"], 1)
         self.assertEqual(event["ts"], "2026-11-12T15:04:05.123Z")
         self.assertEqual(event["source"], "mcp")
-        self.assertEqual(event["tool"], "codebase_search")
+        self.assertEqual(event["tool"], "grep_search")
         self.assertEqual(event["input"], {"pattern": "x"})
         self.assertEqual(event["outcome"], "ok")
         self.assertIsNone(event["client"])
@@ -241,9 +241,8 @@ class CallRecordTest(unittest.TestCase):
         rec = telemetry.CallRecord("cli", "t", {}, environ=self.env)
         with rec.stage("a"):
             pass
-        with self.assertRaises(ValueError):
-            with rec.stage("b"):
-                raise ValueError("bad")
+        with self.assertRaises(ValueError), rec.stage("b"):
+            raise ValueError("bad")
         self.assertIn("a", rec.durations_ms)
         self.assertIn("b", rec.durations_ms)
         self.assertGreaterEqual(rec.durations_ms["b"], 0)
@@ -271,9 +270,8 @@ class CallRecordTest(unittest.TestCase):
 
         rec = telemetry.CallRecord("cli", "t", {}, environ=self.env)
         rec.durations_ms = Broken()
-        with self.assertRaises(ValueError) as ctx:
-            with rec.stage("a"):
-                raise ValueError("x")
+        with self.assertRaises(ValueError) as ctx, rec.stage("a"):
+            raise ValueError("x")
         self.assertEqual(str(ctx.exception), "x")
 
     def test_stage_start_failure_still_runs_body(self):
@@ -284,9 +282,8 @@ class CallRecordTest(unittest.TestCase):
         with mock.patch(
             "auggie_mcp.telemetry.time.perf_counter",
             side_effect=RuntimeError("clock"),
-        ):
-            with rec.stage("a"):
-                ran.append(True)
+        ), rec.stage("a"):
+            ran.append(True)
         self.assertEqual(ran, [True])
         self.assertNotIn("a", rec.durations_ms)
 
@@ -297,10 +294,8 @@ class CallRecordTest(unittest.TestCase):
         with mock.patch(
             "auggie_mcp.telemetry.time.perf_counter",
             side_effect=RuntimeError("clock"),
-        ):
-            with self.assertRaises(ValueError) as ctx:
-                with rec.stage("a"):
-                    raise ValueError("x")
+        ), self.assertRaises(ValueError) as ctx, rec.stage("a"):
+            raise ValueError("x")
         self.assertEqual(str(ctx.exception), "x")
 
     def test_runner_and_processing_blocks(self):

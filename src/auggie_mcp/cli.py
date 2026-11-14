@@ -1,27 +1,23 @@
-"""Command-line interface for the existing retrieval and search runners.
-
-Exposes ``auggie retrieve`` and ``auggie search`` by calling ``agent_runner`` and
-``rg_runner`` directly. Output is JSON by default and text with ``--human``.
-Also registers the semantic index subcommands from ``auggie.cli`` (index, query,
-chunk, reset, reindex, clean, cache-report, delete, log, status, health, tune,
-watch). MCP registration and transport behavior are unchanged.
-"""
+"""Command-line interface for index maintenance and telemetry statistics."""
 
 import argparse
-import asyncio
 import json
 import math
 import os
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
-from auggie import cli as semantic_cli
-from auggie_mcp import agent_runner, rg_runner, telemetry
+from auggie_mcp import config as config_module
+from auggie_mcp import embed, indexer, telemetry
+from auggie_mcp.locking import IndexBusyError
+
+EXIT_BUSY = 3
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class CliUsageError(Exception):
@@ -36,7 +32,6 @@ class _ArgumentParser(argparse.ArgumentParser):
 
 
 def _parse_since(value: str) -> timedelta:
-    """Parse a positive ``Nd`` or ``Nh`` window."""
     if not re.fullmatch(r"\d+[dh]", value) or int(value[:-1]) == 0:
         raise argparse.ArgumentTypeError(
             f"invalid --since value {value!r}; use Nd or Nh with N > 0"
@@ -51,195 +46,35 @@ def _parse_since(value: str) -> timedelta:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the ``auggie`` argument parser."""
     parser = _ArgumentParser(
         prog="auggie",
-        description="Semantic retrieval and exact repository search.",
+        description="Maintain the SQLite index and inspect local telemetry.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    retrieve = subparsers.add_parser(
-        "retrieve",
-        help="Semantically retrieve code with the configured agent CLI.",
-        description="Run the configured agent CLI and print its response.",
-    )
-    retrieve.add_argument("repository", help="Repository directory to search.")
-    retrieve.add_argument("query", help="Natural-language retrieval query.")
-    retrieve.add_argument(
-        "--human",
-        action="store_true",
-        help="Print the retrieval response as text instead of JSON.",
-    )
+    index_cmd = subparsers.add_parser("index", help="Build or update the SQLite repository index.")
+    index_cmd.add_argument("repository", help="Repository directory to index.")
+    index_cmd.add_argument("--rebuild", action="store_true", help="Rebuild from scratch.")
+    index_cmd.add_argument("--json", action="store_true", help="Print the structured JSON result.")
 
-    search = subparsers.add_parser(
-        "search",
-        help="Run an exact ripgrep search in the invocation directory.",
-        description=(
-            "Run rg in the invocation directory. Remaining arguments are "
-            "forwarded to the existing rg flag validation."
-        ),
-    )
-    search.add_argument("pattern", help="Search pattern passed to rg.")
-    search.add_argument(
-        "--human",
-        action="store_true",
-        help="Print the search standard output instead of JSON.",
-    )
+    status_cmd = subparsers.add_parser("status", help="Report repository index status.")
+    status_cmd.add_argument("repository", help="Repository directory to inspect.")
 
-    stats = subparsers.add_parser(
-        "stats",
-        help="Summarize local telemetry files.",
-        description="Summarize the local telemetry events in a time window.",
-    )
-    stats.add_argument(
-        "--since",
-        type=_parse_since,
-        default=_parse_since("7d"),
-        metavar="Nd|Nh",
-        help="Window size in days or hours, for example 7d or 24h (default: 7d).",
-    )
-    stats.add_argument(
-        "--json",
-        action="store_true",
-        help="Print one JSON object instead of text.",
-    )
-
-    semantic_cli._add_index_command(subparsers)
-    semantic_cli._add_query_command(subparsers)
-    semantic_cli._add_chunk_command(subparsers)
-    semantic_cli._add_reset_command(subparsers)
-    semantic_cli._add_reindex_command(subparsers)
-    semantic_cli._add_clean_command(subparsers)
-    semantic_cli._add_cache_report_command(subparsers)
-    semantic_cli._add_delete_command(subparsers)
-    semantic_cli._add_log_command(subparsers)
-    semantic_cli._add_status_command(subparsers)
-    semantic_cli._add_health_command(subparsers)
-    semantic_cli._add_tune_command(subparsers)
-    semantic_cli._add_watch_command(subparsers)
-
+    stats = subparsers.add_parser("stats", help="Summarize local telemetry files.")
+    stats.add_argument("--since", type=_parse_since, default=_parse_since("7d"), metavar="Nd|Nh")
+    stats.add_argument("--json", action="store_true")
     return parser
 
 
-def _emit_error(message: str) -> None:
-    """Write a JSON error object to standard error."""
-    json.dump({"error": message}, sys.stderr)
-    sys.stderr.write("\n")
-
-
-def _run_retrieve(args, extra, *, agent_executable):
-    record = telemetry.CallRecord(
-        "cli",
-        "codebase_retrieval",
-        {"repository_path": args.repository, "query": args.query, "goal": None},
-        client=None,
-    )
-    outcome, error = "ok", None
-    try:
-        if extra:
-            raise CliUsageError(
-                "unrecognized arguments: " + " ".join(extra)
-            )
-        try:
-            with record.stage("runner"):
-                response = asyncio.run(
-                    agent_runner.run_agent(
-                        args.repository,
-                        args.query,
-                        executable=agent_executable,
-                    )
-                )
-        except agent_runner.AgentError as exc:
-            record.set_runner(
-                exit_code=exc.returncode,
-                stdout_bytes=0,
-                stderr_bytes=len(exc.detail.encode("utf-8")),
-            )
-            raise
-        record.set_runner(
-            exit_code=0,
-            stdout_bytes=len(response.encode("utf-8")),
-            stderr_bytes=0,
-        )
-        if args.human:
-            sys.stdout.write(response + "\n")
-        else:
-            json.dump({"response": response}, sys.stdout)
-            sys.stdout.write("\n")
-        return 0
-    except asyncio.CancelledError:
-        outcome = "cancelled"
-        raise
-    except BaseException as exc:
-        outcome, error = "error", exc
-        raise
-    finally:
-        record.finish(outcome, error)
-
-
-def _run_search(args, extra, *, rg_executable):
-    repository_root = os.getcwd()
-    record = telemetry.CallRecord(
-        "cli",
-        "codebase_search",
-        {
-            "pattern": args.pattern,
-            "path": ".",
-            "flags": extra,
-            "goal": None,
-            "repository_path": repository_root,
-        },
-    )
-    outcome, error = "ok", None
-    try:
-        with record.stage("runner"):
-            result = asyncio.run(
-                rg_runner.run_rg(
-                    repository_root,
-                    args.pattern,
-                    path=".",
-                    flags=extra,
-                    executable=rg_executable,
-                )
-            )
-        exit_code = result["exit_code"]
-        record.set_runner(
-            exit_code=exit_code,
-            stdout_bytes=len(result["stdout"].encode("utf-8")),
-            stderr_bytes=len(result["stderr"].encode("utf-8")),
-        )
-        if exit_code not in (0, 1):
-            message = result["stderr"].strip() or f"rg exited with status {exit_code}"
-            raise RuntimeError(message)
-        if exit_code == 1:
-            outcome = "no_match"
-        if args.human:
-            sys.stdout.write(result["stdout"])
-        else:
-            json.dump(result, sys.stdout)
-            sys.stdout.write("\n")
-        return exit_code
-    except asyncio.CancelledError:
-        outcome = "cancelled"
-        raise
-    except BaseException as exc:
-        outcome, error = "error", exc
-        raise
-    finally:
-        record.finish(outcome, error)
-
-
-def _percentile(sorted_values, percent):
-    # Nearest rank: rank = ceil(p/100 * n), value = sorted[rank - 1].
-    rank = math.ceil(percent / 100 * len(sorted_values))
-    return sorted_values[rank - 1]
-
-
-def _read_events(since):
-    """Return (events in window, skipped line count) from the telemetry files."""
+def _read_events(since, telemetry_config=None):
+    if telemetry_config is not None and not telemetry_config.enabled:
+        return [], 0
     cutoff = _utc_now() - since
     events, skipped = [], 0
-    for path in sorted(telemetry.telemetry_dir().glob("events-*.jsonl")):
+    directory = telemetry.telemetry_dir(
+        directory=telemetry_config.dir if telemetry_config is not None else None
+    )
+    for path in sorted(directory.glob("events-*.jsonl")):
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 if not line.strip():
@@ -253,7 +88,7 @@ def _read_events(since):
                         raise ValueError
                     for key in ("tool", "source", "outcome"):
                         if not isinstance(event.get(key), str):
-                            raise ValueError
+                            raise TypeError
                 except (ValueError, KeyError, TypeError):
                     skipped += 1
                     continue
@@ -264,6 +99,11 @@ def _read_events(since):
 
 def _is_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _percentile(sorted_values, percent):
+    rank = math.ceil(percent / 100 * len(sorted_values))
+    return sorted_values[rank - 1]
 
 
 def _summarize(events, skipped):
@@ -286,21 +126,14 @@ def _summarize(events, skipped):
             if _is_number(processing.get("estimated_tokens")):
                 tokens += processing["estimated_tokens"]
     return {
-        "events": len(events),
-        "skipped": skipped,
-        "by_tool": counts["tool"],
-        "by_source": counts["source"],
+        "events": len(events), "skipped": skipped,
+        "by_tool": counts["tool"], "by_source": counts["source"],
         "outcomes": counts["outcome"],
         "durations_ms": {
-            stage: {
-                "p50": _percentile(sorted(values), 50),
-                "p95": _percentile(sorted(values), 95),
-            }
+            stage: {"p50": _percentile(sorted(values), 50), "p95": _percentile(sorted(values), 95)}
             for stage, values in durations.items()
         },
-        "retained_chunk_ratio_mean": (
-            sum(ratios) / len(ratios) if ratios else None
-        ),
+        "retained_chunk_ratio_mean": sum(ratios) / len(ratios) if ratios else None,
         "estimated_tokens_total": tokens,
     }
 
@@ -308,78 +141,98 @@ def _summarize(events, skipped):
 def _format_stats(summary):
     ratio = summary["retained_chunk_ratio_mean"]
     rows = [
-        ("events", summary["events"]),
-        ("skipped", summary["skipped"]),
-        (
-            "retained_chunk_ratio_mean",
-            "n/a" if ratio is None else f"{ratio:.3f}",
-        ),
+        ("events", summary["events"]), ("skipped", summary["skipped"]),
+        ("retained_chunk_ratio_mean", "n/a" if ratio is None else f"{ratio:.3f}"),
         ("estimated_tokens_total", summary["estimated_tokens_total"]),
     ]
-    for title, key in (
-        ("by_tool", "by_tool"),
-        ("by_source", "by_source"),
-        ("outcomes", "outcomes"),
-    ):
-        rows += [(f"{title}.{name}", n) for name, n in summary[key].items()]
+    for title in ("by_tool", "by_source", "outcomes"):
+        rows.extend((f"{title}.{name}", count) for name, count in summary[title].items())
     for stage, pct in summary["durations_ms"].items():
-        rows.append(
-            (f"durations_ms.{stage}", f"p50 {pct['p50']:.1f}  p95 {pct['p95']:.1f}")
-        )
+        rows.append((f"durations_ms.{stage}", f"p50 {pct['p50']:.1f}  p95 {pct['p95']:.1f}"))
     width = max(len(label) for label, _ in rows)
     return "".join(f"{label:<{width}}  {value}\n" for label, value in rows)
 
 
-def _run_stats(args, extra):
-    if extra:
-        raise CliUsageError("unrecognized arguments: " + " ".join(extra))
-    summary = _summarize(*_read_events(args.since))
-    if args.json:
-        json.dump(summary, sys.stdout)
-        sys.stdout.write("\n")
+def _emit_error(message: str) -> None:
+    json.dump({"error": message}, sys.stderr)
+    sys.stderr.write("\n")
+
+
+def _index_error(exc: Exception) -> dict:
+    if isinstance(exc, embed.MissingApiKeyError):
+        code = "MISSING_API_KEY"
+    elif isinstance(exc, embed.EmbedError):
+        code = "EMBED_FAILED"
+    elif isinstance(exc, indexer.ModelMismatchError):
+        code = "INDEX_MODEL_MISMATCH"
+    elif isinstance(exc, IndexBusyError):
+        code = "INDEX_BUSY"
+    elif isinstance(exc, TimeoutError):
+        code = "TIMEOUT"
+    elif isinstance(exc, FileNotFoundError):
+        code = "INVALID_PATH"
+    elif isinstance(exc, ValueError):
+        code = "INVALID_PATH" if "path" in str(exc).lower() else "INVALID_ARGUMENT"
     else:
-        sys.stdout.write(_format_stats(summary))
-    return 0
+        code = "INTERNAL_ERROR"
+    return {
+        "code": code,
+        "message": str(exc) or exc.__class__.__name__,
+        "http_status": exc.http_status if isinstance(exc, embed.EmbedError) else None,
+    }
 
 
-def main(
-    argv=None,
-    *,
-    agent_executable: str | None = None,
-    rg_executable: str = "rg",
-) -> int:
-    """Run the ``auggie`` command line and return an exit code."""
+def _emit_index_error(exc: Exception) -> None:
+    json.dump({"error": _index_error(exc)}, sys.stdout)
+    sys.stdout.write("\n")
+
+
+def main(argv=None, *, config=None, embedder=None) -> int:
     parser = build_parser()
     try:
-        args, extra = parser.parse_known_args(argv)
+        args = parser.parse_args(argv)
     except CliUsageError as exc:
         _emit_error(str(exc))
         return 2
-
-    telemetry.prune_old_files()
-    func = getattr(args, "func", None)
-    if func is not None:
-        if extra:
-            _emit_error("unrecognized arguments: " + " ".join(extra))
-            return 2
-        return func(args)
+    cfg = config or config_module.load()
+    telemetry.prune_old_files(
+        enabled=cfg.telemetry.enabled,
+        directory=cfg.telemetry.dir,
+        retention=cfg.telemetry.retention_days,
+    )
     try:
-        if args.command == "retrieve":
-            return _run_retrieve(args, extra, agent_executable=agent_executable)
         if args.command == "stats":
-            return _run_stats(args, extra)
-        return _run_search(args, extra, rg_executable=rg_executable)
-    except CliUsageError as exc:
-        _emit_error(str(exc))
-        return 2
-    except (ValueError, FileNotFoundError) as exc:
-        _emit_error(str(exc))
-        return 2
-    except agent_runner.AgentError as exc:
-        _emit_error(str(exc))
-        return 2
-    except Exception as exc:  # timeout, unexpected runner failure
-        _emit_error(str(exc) or exc.__class__.__name__)
+            summary = _summarize(*_read_events(args.since, cfg.telemetry))
+            if args.json:
+                json.dump(summary, sys.stdout)
+                sys.stdout.write("\n")
+            else:
+                sys.stdout.write(_format_stats(summary))
+            return 0
+        repo = Path(args.repository)
+        if not repo.is_dir():
+            raise FileNotFoundError(f"repository directory does not exist: {args.repository}")
+        if args.command == "index":
+            # CLI-only injection keeps subprocess error-channel coverage offline.
+            if os.environ.get("AUGGIE_TEST_INDEX_EMBED_ERROR_STATUS") == "429":
+                raise embed.EmbedError("test-injected embedding failure", status=429)
+            result = indexer.index_update(repo, config=cfg, embedder=embedder, rebuild=args.rebuild)
+        else:
+            result = indexer.index_status(repo)
+        json.dump(result, sys.stdout)
+        sys.stdout.write("\n")
+        return 0
+    except IndexBusyError as exc:
+        if args.command == "index" and args.json:
+            _emit_index_error(exc)
+        else:
+            _emit_error(str(exc))
+        return EXIT_BUSY
+    except Exception as exc:  # noqa: BLE001 - CLI errors become stable exit results.
+        if args.command == "index" and args.json:
+            _emit_index_error(exc)
+        else:
+            _emit_error(str(exc) or exc.__class__.__name__)
         return 2
 
 

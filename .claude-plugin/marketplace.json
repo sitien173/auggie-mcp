@@ -1,13 +1,13 @@
 {
   "name": "auggie-mcp",
-  "description": "Agent-based codebase retrieval and semantic search over MCP.",
+  "description": "MCP server for repository grep, semantic search, indexing, and read-only codebase retrieval.",
   "owner": {
     "name": "Tien Ngo"
   },
   "plugins": [
     {
       "name": "auggie-mcp",
-      "description": "Agent-based codebase retrieval and semantic search over MCP.",
+      "description": "MCP server for repository grep, semantic search, indexing, and read-only codebase retrieval.",
       "version": "0.5.0",
       "source": "./plugin"
     }

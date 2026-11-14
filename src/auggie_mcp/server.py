@@ -1,561 +1,426 @@
-"""Stdio MCP server exposing semantic and exact codebase search."""
+"""Stdio MCP server exposing the five SQLite rewrite tools."""
+
+from __future__ import annotations
 
 import asyncio
+import functools
+import importlib.metadata
+import json
+import os
+import re
+import signal
+import sys
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Literal, Sequence
+from typing import Any
 
-from mcp import MCPError
 from mcp.server import CacheHint, MCPServer
-from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import UNSUPPORTED_PROTOCOL_VERSION, ToolAnnotations
-from mcp.types.version import MODERN_PROTOCOL_VERSIONS
+from mcp.types import ToolAnnotations
 
-from auggie_mcp import agent_runner, index_tools, rg_runner, semantic_search, telemetry
-from auggie_mcp.output_processing import (
-    OutputProcessor,
-    RetrievalEnvelope,
-    SearchEnvelope,
-    create_typesafe_client,
-    load_config,
-    reset_archive_executor,
+from auggie_mcp import (
+    config,
+    embed,
+    grep,
+    indexer,
+    locking,
+    output_limits,
+    retrieval,
+    semantic,
+    telemetry,
 )
 
-_TOOL_DESCRIPTION = """
-Answer a question about a codebase by running a retrieval agent over it and returning a synthesized, pruned answer.
-
-This tool is LONG RUNNING. A single call typically takes several minutes.
-
-- Run it as a background task and wait for it to complete.
-- Do NOT explore the codebase yourself while it runs. Do not read files, grep, or spawn search agents in the meantime.
-- Do NOT call it again for the same question while a call is in flight.
-- The agent can edit files, so this tool is not read-only.
-- It reads the files on disk and has no information on version control or code history. It reads an existing semantic index for hints and never builds or updates it.
-
-## When to Use
-
-Use `codebase_retrieval` only when you need a synthesized answer and do not know which files hold the information, for example:
-
-- "Where is the function that handles user authentication?"
-- "What tests are there for the login functionality?"
-- "How is the database connected to the application?"
-
-For known literals and symbols, use `codebase_search` with `mode="exact"`. For a ranked list of code that matches a concept, use `index_status`, then `index_update` if needed, then `codebase_search` with `mode="semantic"`. To read a known file, use file view.
-
-## Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `repository_path` | `string` | Yes | Absolute path to the directory or repository you want to search. |
-| `query` | `string` | Yes | A description of the information you need from the codebase. |
-| `goal` | `string` | No | Optional specific task or question guiding retention pruning. Defaults to query. |"""
-
-_INDEX_STATUS_DESCRIPTION = (
-    "Inspect the semantic index of a repository without changing it. Returns whether "
-    "the index exists, its model, dimensions, file and chunk counts, the last index "
-    "time, stale counts (modified, deleted, candidate_added), and a next_step. "
-    "candidate_added counts files the indexer may add and can overcount binary files."
-)
-
-_INDEX_UPDATE_DESCRIPTION = (
-    "Build or refresh the semantic index of a repository. By default the update is "
-    "incremental and reuses the indexed model; the first call builds the index. "
-    "rebuild=True deletes the existing index first and then rebuilds it, so an "
-    "interrupted rebuild can leave no index; index_status then reports exists=false. "
-    "Calls Voyage and incurs charges; charges already incurred are not recovered "
-    "if the call is cancelled or times out. Fails if another update is running. "
-    "Requires VOYAGE_API_KEY in the server environment. The timeout is "
-    "AUGGIE_INDEX_TIMEOUT_S seconds, default 1800."
-)
-
-
-_SEARCH_TOOL_DESCRIPTION = (
-    "Search a repository in one of two modes. mode='exact' (default) runs ripgrep for "
-    "literals, symbols, and regexes; it needs no index. Relative paths resolve beneath "
-    "the server startup repository and absolute paths may target any accessible "
-    "location. Accepts ripgrep-compatible flags: -F for literal strings, -t/-g to "
-    "scope, -l for file names only, -C N for context. mode='semantic' returns the "
-    "highest-ranked indexed code chunks for a concept query, rendered as "
-    "'path:start-end score=<score>' followed by the code, with blocks separated by "
-    "'--'. It requires an index: call index_status, then index_update if the index is "
-    "missing or stale. Semantic search never updates the index, and data.index reports "
-    "how many indexed files are stale. A path below the repository root limits results "
-    "to that subtree and can return fewer than top_k hits. flags apply only to "
-    "mode='exact'. top_k (1 to 50, default 10) and context_lines (0 to 20, default 0) "
-    "apply only to mode='semantic'. An empty result is a normal result with exit_code 1."
-)
+TOOL_TIMEOUT_S = 1800
 
 _INSTRUCTIONS = """\
-1. Use `codebase_search` with `mode=exact` for known literals and symbols. It needs no index.
-2. For concept queries, call `index_status`. If the index is missing or stale, call `index_update`, then `codebase_search` with `mode=semantic`.
-3. Use `codebase_retrieval` only for a synthesized answer, and do not know which files hold the information"""
+1. Use `grep_search` for known literals, symbols, and regular expressions.
+2. For concept queries, call `index_status`. If the index is missing or stale, call `index_update`, then `semantic_search`.
+3. Use `codebase_retrieval` when you need a synthesized answer.
+"""
+
+_TOOL_DESCRIPTIONS = {
+    "grep_search": "Search repository text with ripgrep. No matches are a normal empty result.",
+    "semantic_search": "Return ranked code chunks from the SQLite semantic index. Search never updates the index.",
+    "index_status": "Inspect index counts and stat-only staleness without changing the index.",
+    "index_update": "Build or refresh the repository's SQLite semantic index.",
+    "codebase_retrieval": "Run the configured read-only agent CLI and return a synthesized answer.",
+}
+
+_ERROR_ACTIONS = {
+    "INVALID_PATH": "Fix the path",
+    "INVALID_ARGUMENT": "Fix the argument",
+    "INDEX_MISSING": "Call index_update",
+    "INDEX_MODEL_MISMATCH": "Call index_update with rebuild=true",
+    "INDEX_BUSY": "Retry later",
+    "MISSING_API_KEY": "Set the environment variable",
+    "EMBED_FAILED": "Retry or check quota",
+    "TIMEOUT": "Narrow the scope",
+    "RETRIEVAL_BUSY": "Retry later",
+    "REPO_MODIFIED": "The result is discarded. The message lists changed files",
+    "BINARY_NOT_FOUND": "Install the binary",
+    "INTERNAL_ERROR": "Inspect the server logs",
+}
 
 
-def _client_info(ctx: Any) -> dict[str, Any] | None:
-    """Return the connected MCP client's name and version, or None if unavailable."""
+class InvalidPathError(ValueError):
+    """Raised when a repository path does not identify a directory."""
+
+
+def _client_info(ctx: Context | None) -> dict[str, str] | None:
+    if ctx is None:
+        return None
     try:
         info = ctx.session.client_params.client_info
         return {"name": info.name, "version": info.version}
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return None
 
 
-def _utf8_len(text: str | None) -> int:
-    return len((text or "").encode("utf-8"))
+def _error_code(exc: BaseException) -> tuple[str, str]:
+    message = str(exc).strip() or exc.__class__.__name__
+    lowered = message.lower()
+    if isinstance(exc, InvalidPathError):
+        return "INVALID_PATH", message
+    if "voyage_api_key" in lowered:
+        return "MISSING_API_KEY", message
+    if "model_key" in lowered and ("does not match" in lowered or "mismatch" in lowered):
+        return "INDEX_MODEL_MISMATCH", message
+    if re.search(r"\bhttp\s+\d{3}\b", message, re.IGNORECASE):
+        return "EMBED_FAILED", message
+    if "binary_not_found" in lowered or "missing_cli" in lowered:
+        return "BINARY_NOT_FOUND", message
+    if isinstance(exc, locking.IndexBusyError):
+        return "INDEX_BUSY", message
+    if isinstance(exc, semantic.IndexMissingError):
+        return "INDEX_MISSING", message
+    if isinstance(exc, (semantic.ModelMismatchError, indexer.ModelMismatchError)):
+        return "INDEX_MODEL_MISMATCH", message
+    if isinstance(exc, embed.MissingApiKeyError):
+        return "MISSING_API_KEY", message
+    if isinstance(exc, embed.EmbedError):
+        status = exc.http_status or exc.status
+        if status is not None and not re.search(rf"\b{status}\b", message):
+            message = f"HTTP {status}: {message}"
+        return "EMBED_FAILED", message
+    if isinstance(exc, retrieval.RepoModifiedError):
+        return "REPO_MODIFIED", message
+    if isinstance(exc, retrieval.RetrievalBusyError):
+        return "RETRIEVAL_BUSY", message
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)) or "timed out" in lowered or "timeout" in lowered:
+        return "TIMEOUT", message
+    if isinstance(exc, (FileNotFoundError, OSError)) and any(
+        part in message.lower() for part in ("executable not found", "binary not found", "no such file or directory")
+    ):
+        return "BINARY_NOT_FOUND", message
+    if isinstance(exc, (ValueError, FileNotFoundError)):
+        if "path does not exist" in message.lower() or "not a directory" in message.lower():
+            return "INVALID_PATH", message
+        return "INVALID_ARGUMENT", message
+    if "regex parse error" in lowered or "unrecognized flag" in lowered:
+        return "INVALID_ARGUMENT", message
+    return "INTERNAL_ERROR", message
 
 
-@dataclass
-class LifespanState:
-    """Server lifespan context holding shared TypeSafe client and output processor."""
-
-    client: Any
-    processor: OutputProcessor
-
-    def __getitem__(self, key: str) -> Any:
-        if key == "client":
-            return self.client
-        if key == "processor":
-            return self.processor
-        raise KeyError(key)
+def _tool_error(exc: BaseException) -> ToolError:
+    code, message = _error_code(exc)
+    return ToolError(f"{code}: {message}. {_ERROR_ACTIONS[code]}")
 
 
-async def _refuse_initialize(
-    ctx: ServerRequestContext[Any, Any], call_next: CallNext
-) -> HandlerResult:
-    """Reject the legacy initialize handshake; pass everything else through."""
-    if ctx.method == "initialize" and ctx.request_id is not None:
-        supported = list(MODERN_PROTOCOL_VERSIONS)
-        raise MCPError(
-            code=UNSUPPORTED_PROTOCOL_VERSION,
-            message=f"Unsupported protocol version. Supported versions: {', '.join(supported)}",
-            data={
-                "supported": supported,
-                "requested": (ctx.params or {}).get("protocolVersion") or None,
-            },
+def _instrument(tool_name: str, telemetry_config: config.TelemetryConfig) -> Callable:
+    """Record one telemetry event and map every tool exception consistently."""
+    def decorate(function: Callable) -> Callable:
+        @functools.wraps(function)
+        async def wrapped(*args, **kwargs):
+            ctx = kwargs.get("ctx")
+            tool_input = {key: value for key, value in kwargs.items() if key != "ctx"}
+            record = telemetry.CallRecord(
+                "mcp", tool_name, tool_input, client=_client_info(ctx),
+                telemetry_enabled=telemetry_config.enabled,
+                telemetry_directory=telemetry_config.dir,
+            )
+            outcome = "error"
+            error: BaseException | None = None
+            try:
+                with record.stage("runner"):
+                    result = await function(*args, **kwargs)
+                if tool_name == "grep_search":
+                    runner = result.pop("_runner", None)
+                    if runner is not None:
+                        record.set_runner(**runner)
+                elif tool_name == "codebase_retrieval":
+                    record.set_runner(
+                        exit_code=0,
+                        stdout_bytes=len(result["answer"].encode("utf-8")),
+                        stderr_bytes=0,
+                    )
+                outcome = "ok"
+                return result
+            except asyncio.CancelledError as exc:
+                outcome = "cancelled"
+                error = exc
+                if tool_name in {"grep_search", "codebase_retrieval"}:
+                    record.set_runner(exit_code=None, stdout_bytes=0, stderr_bytes=0)
+                raise
+            except Exception as exc:
+                error = exc
+                if tool_name in {"grep_search", "codebase_retrieval"}:
+                    runner = getattr(exc, "runner", None)
+                    if runner is not None and tool_name == "grep_search":
+                        record.set_runner(**runner)
+                    else:
+                        record.set_runner(
+                            exit_code=None, stdout_bytes=0,
+                            stderr_bytes=len(str(exc).encode("utf-8")),
+                        )
+                raise _tool_error(exc) from exc
+            finally:
+                record.finish(outcome, error)
+        return wrapped
+    return decorate
+
+
+async def _kill_process_group(process: asyncio.subprocess.Process) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        if process.returncode is None:
+            await process.wait()
+        return
+    try:
+        await asyncio.wait_for(process.wait(), timeout=2)
+    except TimeoutError:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if process.returncode is None:
+        await process.wait()
+
+
+def _repository_path(repository_path: str) -> Path:
+    path = Path(repository_path).expanduser().resolve()
+    if not path.exists():
+        raise InvalidPathError(f"repository path does not exist: {path}")
+    if not path.is_dir():
+        raise InvalidPathError(f"repository path is not a directory: {path}")
+    return path
+
+
+async def _run_index_update(
+    repository_path: str, rebuild: bool, timeout_s: float = TOOL_TIMEOUT_S
+) -> dict[str, Any]:
+    repository_path = str(_repository_path(repository_path))
+    command = [sys.executable, "-m", "auggie_mcp.cli", "index"]
+    if rebuild:
+        command.append("--rebuild")
+    command.extend(("--json", repository_path))
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
-    return await call_next(ctx)
+    except OSError as exc:
+        raise FileNotFoundError(f"index CLI binary not found: {sys.executable}") from exc
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(), timeout=timeout_s
+        )
+    except TimeoutError as exc:
+        await _kill_process_group(process)
+        raise TimeoutError(f"index update exceeded {timeout_s} seconds") from exc
+    except asyncio.CancelledError:
+        await _kill_process_group(process)
+        raise
+    from auggie_mcp.cli import EXIT_BUSY
+
+    if process.returncode == EXIT_BUSY:
+        raise locking.IndexBusyError("another process holds the index lock")
+    if process.returncode:
+        record = stdout.decode("utf-8", errors="replace").strip()
+        try:
+            error = json.loads(record).get("error")
+        except (json.JSONDecodeError, AttributeError):
+            error = None
+        if isinstance(error, dict):
+            code = error.get("code")
+            message = error.get("message")
+            status = error.get("http_status")
+            if not isinstance(code, str) or not isinstance(message, str):
+                raise TypeError("index CLI returned malformed error JSON")
+            if code == "MISSING_API_KEY":
+                raise embed.MissingApiKeyError(message)
+            if code == "EMBED_FAILED":
+                raise embed.EmbedError(message, status=status)
+            if code == "INDEX_MODEL_MISMATCH":
+                raise indexer.ModelMismatchError(message)
+            if code == "INDEX_BUSY":
+                raise locking.IndexBusyError(message)
+            if code == "TIMEOUT":
+                raise TimeoutError(message)
+            if code == "INVALID_PATH":
+                raise InvalidPathError(message)
+            if code == "INVALID_ARGUMENT":
+                raise ValueError(message)
+            if code == "BINARY_NOT_FOUND":
+                raise FileNotFoundError(message)
+            raise RuntimeError(message)
+        diagnostic = stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(diagnostic or record or f"index CLI exited with status {process.returncode}")
+    try:
+        result = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("index CLI returned invalid JSON") from exc
+    keys = ("files_scanned", "files_changed", "files_deleted", "chunks_embedded", "chunks_reused", "duration_ms")
+    return {key: result[key] for key in keys}
+
+
+def _agent_config(agent: config.AgentConfig) -> retrieval.AgentConfig:
+    return retrieval.AgentConfig(
+        driver=agent.driver,
+        model=agent.model,
+        reasoning=agent.reasoning,
+        args=agent.args,
+        executable=agent.executable,
+        timeout_s=agent.timeout_s,
+    )
 
 
 def create_server(
     *,
+    app_config: config.Config | None = None,
     executable: str | None = None,
     rg_executable: str = "rg",
-    index_command: Sequence[str] | None = None,
-    repository_root=None,
-    client_factory: Callable[[], Any] | None = None,
-    processor_factory: Callable[[Any], OutputProcessor] | None = None,
+    repository_root: str | Path | None = None,
 ) -> MCPServer:
-    """Build the MCP server and capture its repository search root."""
-    search_root = Path.cwd() if repository_root is None else Path(repository_root)
+    """Build the server with configuration supplied by its launcher."""
+    cfg = app_config or config.load()
+    server_root = Path.cwd() if repository_root is None else Path(repository_root)
 
     @asynccontextmanager
-    async def lifespan(app: MCPServer) -> AsyncIterator[LifespanState]:
-        cfg = load_config()
-        if client_factory is not None:
-            client = client_factory()
-        elif cfg.api_key:
-            client = create_typesafe_client(cfg)
-        else:
-            client = None
+    async def lifespan(app: MCPServer) -> AsyncGenerator[dict[str, Any], None]:
+        output_limits.cleanup_archives_on_startup(server_root)
+        telemetry.prune_old_files(
+            enabled=cfg.telemetry.enabled,
+            directory=cfg.telemetry.dir,
+            retention=cfg.telemetry.retention_days,
+        )
+        yield {"config": cfg}
 
-        telemetry.prune_old_files()
-
-        if client is not None and hasattr(client, "__aenter__") and hasattr(client, "__aexit__"):
-            async with client:
-                proc = (
-                    processor_factory(client)
-                    if processor_factory is not None
-                    else OutputProcessor(client=client, config=cfg)
-                )
-                state = LifespanState(client=client, processor=proc)
-                app._current_lifespan_state = state
-                try:
-                    yield state
-                finally:
-                    app._current_lifespan_state = None
-                    reset_archive_executor(wait=True)
-        elif client is not None:
-            proc = (
-                processor_factory(client)
-                if processor_factory is not None
-                else OutputProcessor(client=client, config=cfg)
-            )
-            state = LifespanState(client=client, processor=proc)
-            app._current_lifespan_state = state
-            try:
-                yield state
-            finally:
-                app._current_lifespan_state = None
-                if hasattr(client, "aclose"):
-                    await client.aclose()
-                reset_archive_executor(wait=True)
-        else:
-            proc = (
-                processor_factory(client)
-                if processor_factory is not None
-                else OutputProcessor(client=None, config=cfg)
-            )
-            state = LifespanState(client=None, processor=proc)
-            app._current_lifespan_state = state
-            try:
-                yield state
-            finally:
-                app._current_lifespan_state = None
-                reset_archive_executor(wait=True)
-
-    server = MCPServer(
+    mcp = MCPServer(
         name="auggie-mcp",
         title="Auggie Codebase Search",
         description="Semantic retrieval and fast exact repository search.",
-        version="0.5.0",
+        version=importlib.metadata.version("auggie-mcp"),
         instructions=_INSTRUCTIONS,
         lifespan=lifespan,
-        middleware=[_refuse_initialize],
         cache_hints={"tools/list": CacheHint(ttl_ms=3_600_000, scope="private")},
         subscriptions=False,
     )
 
-    def _lifespan_processor(ctx: Context | None = None) -> OutputProcessor | None:
-        if ctx is not None:
-            try:
-                req_ctx = ctx.request_context
-                if req_ctx is not None and hasattr(req_ctx, "lifespan_context"):
-                    ls = req_ctx.lifespan_context
-                    if isinstance(ls, LifespanState):
-                        return ls.processor
-                    if isinstance(ls, dict) and "processor" in ls:
-                        return ls["processor"]
-                    if hasattr(ls, "processor"):
-                        return ls.processor
-            except (ValueError, AttributeError):
-                pass
-            if getattr(ctx, "mcp_server", None) is not None:
-                active = getattr(ctx.mcp_server, "_current_lifespan_state", None)
-                if active is not None:
-                    return active.processor
-
-        if getattr(server, "_current_lifespan_state", None) is not None:
-            return server._current_lifespan_state.processor
-        return None
-
-    @asynccontextmanager
-    async def _processor_scope(
+    @mcp.tool(description=_TOOL_DESCRIPTIONS["grep_search"], annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))
+    @_instrument("grep_search", cfg.telemetry)
+    async def grep_search(
+        repository_path: str,
+        pattern: str,
+        path: str = ".",
+        flags: list[str] | None = None,
+        max_results: int = 200,
         ctx: Context | None = None,
-    ) -> AsyncIterator[OutputProcessor]:
-        """Yield the lifespan processor, or a per-call one whose client is closed on exit."""
-        shared = _lifespan_processor(ctx)
-        if shared is not None:
-            yield shared
-            return
+    ) -> dict[str, Any]:
+        repository_path = str(_repository_path(repository_path))
+        grep.resolve_search_path(repository_path, path)
+        return await grep.grep_search(
+            repository_path, pattern, path=path, flags=flags, max_results=max_results,
+            executable=rg_executable, include_runner=True,
+        )
 
-        cfg = load_config()
-        if client_factory is not None:
-            cl = client_factory()
-        elif cfg.api_key:
-            cl = create_typesafe_client(cfg)
-        else:
-            cl = None
-        try:
-            if processor_factory is not None:
-                yield processor_factory(cl)
-            else:
-                yield OutputProcessor(client=cl, config=cfg)
-        finally:
-            if cl is not None and hasattr(cl, "aclose"):
-                try:
-                    await cl.aclose()
-                except Exception:
-                    pass
+    @mcp.tool(name="semantic_search", description=_TOOL_DESCRIPTIONS["semantic_search"], annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))
+    @_instrument("semantic_search", cfg.telemetry)
+    async def semantic_search_tool(
+        repository_path: str,
+        query: str,
+        path: str = ".",
+        top_k: int = 10,
+        context_lines: int = 0,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        if not 1 <= top_k <= 50 or not 0 <= context_lines <= 20:
+            raise ValueError("top_k must be 1 to 50 and context_lines must be 0 to 20")
+        repository_path = str(_repository_path(repository_path))
+        return await asyncio.to_thread(
+            semantic.semantic_search,
+            repository_path,
+            query,
+            path=path,
+            top_k=top_k,
+            context_lines=context_lines,
+            config=cfg,
+        )
 
-    @server.tool(
-        name="codebase_retrieval",
-        description=_TOOL_DESCRIPTION,
-        annotations=ToolAnnotations(read_only_hint=False, open_world_hint=True),
-    )
+    @mcp.tool(description=_TOOL_DESCRIPTIONS["index_status"], annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False))
+    @_instrument("index_status", cfg.telemetry)
+    async def index_status(repository_path: str, ctx: Context | None = None) -> dict[str, Any]:
+        repository_path = str(_repository_path(repository_path))
+        return await asyncio.to_thread(indexer.index_status, repository_path)
+
+    @mcp.tool(description=_TOOL_DESCRIPTIONS["index_update"], annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=True))
+    @_instrument("index_update", cfg.telemetry)
+    async def index_update(
+        repository_path: str,
+        rebuild: bool = False,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        return await _run_index_update(
+            repository_path, rebuild, timeout_s=cfg.index.timeout_s
+        )
+
+    @mcp.tool(description=_TOOL_DESCRIPTIONS["codebase_retrieval"], annotations=ToolAnnotations(read_only_hint=False, open_world_hint=True))
+    @_instrument("codebase_retrieval", cfg.telemetry)
     async def codebase_retrieval(
         repository_path: str,
         query: str,
-        goal: str | None = None,
-        ctx: Context = None,
-    ) -> RetrievalEnvelope:
-        """Run the agent CLI in ``repository_path`` with ``query`` and return the classified answer envelope."""
-        record = telemetry.CallRecord(
-            "mcp",
-            "codebase_retrieval",
-            {"repository_path": repository_path, "query": query, "goal": goal},
-            client=_client_info(ctx),
-        )
-        outcome = "error"
-        error: BaseException | None = None
-        try:
-            try:
-                with record.stage("runner"):
-                    try:
-                        runner_result = await agent_runner.run_agent(
-                            repository_path,
-                            query,
-                            executable=executable,
-                        )
-                    except agent_runner.AgentError as exc:
-                        record.set_runner(
-                            exit_code=exc.returncode,
-                            stdout_bytes=0,
-                            stderr_bytes=_utf8_len(exc.detail),
-                        )
-                        raise
-                record.set_runner(
-                    exit_code=0,
-                    stdout_bytes=_utf8_len(runner_result),
-                    stderr_bytes=0,
-                )
-            except asyncio.CancelledError:
-                raise
-            except (ValueError, FileNotFoundError) as exc:
-                raise ToolError(str(exc)) from exc
-            except agent_runner.AgentError as exc:
-                raise ToolError(str(exc)) from exc
-            except Exception as exc:  # timeout, unexpected
-                raise ToolError(str(exc) or exc.__class__.__name__) from exc
-
-            effective_goal = goal if goal is not None else query
-            async with _processor_scope(ctx) as processor:
-                with record.stage("processing"):
-                    envelope = await processor.process_retrieval(
-                        query=query,
-                        result=runner_result,
-                        goal=effective_goal,
-                    )
-            try:
-                record.set_processing(
-                    envelope["processing"], envelope["data"]["result"]
-                )
-            except Exception:
-                pass
-            outcome = "ok"
-            return envelope
-        except asyncio.CancelledError:
-            outcome = "cancelled"
-            raise
-        except Exception as exc:
-            error = exc
-            if isinstance(exc, ToolError):
-                raise
-            raise ToolError(str(exc) or exc.__class__.__name__) from exc
-        finally:
-            record.finish(outcome, error)
-
-    @server.tool(
-        name="codebase_search",
-        description=_SEARCH_TOOL_DESCRIPTION,
-        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
-    )
-    async def codebase_search(
-        query: str,
-        path: str = ".",
-        mode: Literal["exact", "semantic"] = "exact",
-        flags: list[str] | None = None,
-        top_k: int = 10,
-        context_lines: int = 0,
-        goal: str | None = None,
-        ctx: Context = None,
-    ) -> SearchEnvelope:
-        """Search exactly with ripgrep or semantically through the index and return the classified search envelope."""
-        record = telemetry.CallRecord(
-            "mcp",
-            "codebase_search",
-            {
-                "query": query,
-                "mode": mode,
-                "path": path,
-                "flags": flags,
-                "goal": goal,
-                "repository_path": str(search_root),
-            },
-            client=_client_info(ctx),
-        )
-        outcome = "error"
-        error: BaseException | None = None
-        try:
-            semantic_search.validate_params(
-                mode, flags=flags, top_k=top_k, context_lines=context_lines
-            )
-            index_info = None
-            try:
-                with record.stage("runner"):
-                    if mode == "semantic":
-                        result = await asyncio.to_thread(
-                            semantic_search.run_semantic,
-                            search_root,
-                            query,
-                            path,
-                            top_k,
-                            context_lines,
-                        )
-                        index_info = result["index"]
-                    else:
-                        result = await rg_runner.run_rg(
-                            search_root,
-                            query,
-                            path,
-                            flags,
-                            executable=rg_executable,
-                        )
-                record.set_runner(
-                    exit_code=result["exit_code"],
-                    stdout_bytes=_utf8_len(result["stdout"]),
-                    stderr_bytes=_utf8_len(result["stderr"]),
-                )
-            except asyncio.CancelledError:
-                raise
-            except ToolError:
-                raise
-            except (ValueError, FileNotFoundError) as exc:
-                raise ToolError(str(exc)) from exc
-            if result["exit_code"] not in {0, 1}:
-                message = result["stderr"] or (
-                    f"rg exited with status {result['exit_code']}"
-                )
-                raise ToolError(message)
-
-            effective_goal = goal if goal is not None else query
-            async with _processor_scope(ctx) as processor:
-                with record.stage("processing"):
-                    envelope = await processor.process_search(
-                        query=query,
-                        stdout=result["stdout"],
-                        stderr=result["stderr"],
-                        exit_code=result["exit_code"],
-                        path=path,
-                        flags=flags,
-                        goal=effective_goal,
-                        repository=search_root,
-                        mode=mode,
-                        index=index_info,
-                    )
-            try:
-                record.set_processing(
-                    envelope["processing"], envelope["data"]["stdout"]
-                )
-            except Exception:
-                pass
-            outcome = "no_match" if result["exit_code"] == 1 else "ok"
-            return envelope
-        except asyncio.CancelledError:
-            outcome = "cancelled"
-            raise
-        except Exception as exc:
-            error = exc
-            if isinstance(exc, ToolError):
-                raise
-            raise ToolError(str(exc) or exc.__class__.__name__) from exc
-        finally:
-            record.finish(outcome, error)
-
-    @server.tool(
-        name="index_status",
-        description=_INDEX_STATUS_DESCRIPTION,
-        annotations=ToolAnnotations(
-            read_only_hint=True, idempotent_hint=True, open_world_hint=False
-        ),
-    )
-    async def index_status(
-        repository_path: str, ctx: Context = None
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """Report whether the semantic index exists, its counts, and how stale it is."""
-        record = telemetry.CallRecord(
-            "mcp",
-            "index_status",
-            {"repository_path": repository_path},
-            client=_client_info(ctx),
+        result = await retrieval.run_agent(
+            repository_path,
+            query,
+            config=_agent_config(cfg.agent),
+            app_config=cfg,
+            executable=executable,
+            max_concurrent=cfg.retrieval.max_concurrent,
         )
-        outcome = "error"
-        error: BaseException | None = None
-        try:
-            try:
-                with record.stage("status"):
-                    result = await asyncio.to_thread(
-                        index_tools.index_status, repository_path
-                    )
-            except asyncio.CancelledError:
-                raise
-            except ToolError:
-                raise
-            except (ValueError, FileNotFoundError) as exc:
-                raise ToolError(str(exc)) from exc
-            outcome = "ok"
-            return result
-        except asyncio.CancelledError:
-            outcome = "cancelled"
-            raise
-        except Exception as exc:
-            error = exc
-            if isinstance(exc, ToolError):
-                raise
-            raise ToolError(str(exc) or exc.__class__.__name__) from exc
-        finally:
-            record.finish(outcome, error)
+        response = {**result, "truncated": False, "archive_path": None}
+        full_output = output_limits.serialize_json(response)
+        if len(full_output.encode("utf-8")) <= output_limits.MAX_OUTPUT_BYTES:
+            return response
 
-    @server.tool(
-        name="index_update",
-        description=_INDEX_UPDATE_DESCRIPTION,
-        annotations=ToolAnnotations(
-            read_only_hint=False, destructive_hint=True, open_world_hint=True
-        ),
-    )
-    async def index_update(
-        repository_path: str, rebuild: bool = False, ctx: Context = None
-    ) -> dict[str, Any]:
-        """Build or refresh the semantic index, or delete and rebuild it with ``rebuild=True``."""
-        record = telemetry.CallRecord(
-            "mcp",
-            "index_update",
-            {"repository_path": repository_path, "rebuild": rebuild},
-            client=_client_info(ctx),
-        )
-        outcome = "error"
-        error: BaseException | None = None
+        _, archive_path = output_limits.truncate_output(full_output, repository_path)
+        response["truncated"] = True
+        response["archive_path"] = archive_path
+        lines = str(response["answer"]).splitlines(keepends=True)
+        low, high = 0, len(lines)
+        while low < high:
+            middle = (low + high + 1) // 2
+            response["answer"] = "".join(lines[:middle])
+            size = len(output_limits.serialize_json(response).encode("utf-8"))
+            if size <= output_limits.MAX_OUTPUT_BYTES:
+                low = middle
+            else:
+                high = middle - 1
+        response["answer"] = "".join(lines[:low])
+        return response
 
-        async def report_progress(progress, total, message):
-            if ctx is not None:
-                await ctx.report_progress(progress, total, message)
-
-        try:
-            try:
-                with record.stage("indexer"):
-                    result = await index_tools.run_index_update(
-                        repository_path,
-                        rebuild=rebuild,
-                        command=index_command,
-                        report_progress=report_progress,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except ToolError:
-                raise
-            except (ValueError, FileNotFoundError) as exc:
-                raise ToolError(str(exc)) from exc
-            outcome = "ok"
-            return result
-        except asyncio.CancelledError:
-            outcome = "cancelled"
-            raise
-        except Exception as exc:
-            error = exc
-            if isinstance(exc, ToolError):
-                raise
-            raise ToolError(str(exc) or exc.__class__.__name__) from exc
-        finally:
-            record.finish(outcome, error)
-
-    return server
+    return mcp
 
 
-def run() -> None:
-    """Run the server on stdio (console entry point and ``python -m``)."""
-    create_server().run("stdio")
+def run(app_config: config.Config | None = None) -> None:
+    """Run the server on stdio."""
+    create_server(app_config=app_config).run("stdio")
 
 
 def main() -> None:

@@ -1,0 +1,585 @@
+{
+  "backend": "old",
+  "corpus_commit": "9c088a3",
+  "corpus_sha": "9c088a3a20cf101fe7de6cc5268813aa1e79fe27",
+  "queries": 36,
+  "recall_at_10": 1.0,
+  "per_query": [
+    {
+      "query": "How does is_prune_eligible decide whether to prune output?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_output_processing.py",
+        "src/auggie_mcp/output_processing.py",
+        "tests/test_telemetry.py",
+        "src/auggie/commands/query.py",
+        "tests/test_agent_runner.py",
+        "tests/test_server.py",
+        "tests/semantic/test_phase4_maintenance.py",
+        "tests/semantic/test_indexer_grouping.py",
+        "tests/test_semantic_search.py",
+        "tests/test_index_tools.py"
+      ]
+    },
+    {
+      "query": "Where is RequestBudgetExhaustedError raised during output processing?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_output_processing.py",
+        "src/auggie_mcp/output_processing.py",
+        "tests/test_agent_runner.py",
+        "tests/test_protocol.py",
+        "tests/semantic/test_embed_parallel.py",
+        "tests/semantic/test_embed_retry.py",
+        "tests/test_telemetry.py",
+        "tests/test_server.py",
+        "src/auggie_mcp/server.py",
+        "tests/test_semantic_search.py"
+      ]
+    },
+    {
+      "query": "How does validate_flags check ripgrep command line arguments?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_rg_runner.py",
+        "tests/test_cli.py",
+        "src/auggie_mcp/rg_runner.py",
+        "tests/test_semantic_search.py",
+        "tests/test_server.py",
+        "tests/test_output_processing.py",
+        "tests/fake_rg.py",
+        "src/auggie_mcp/cli.py",
+        "src/auggie/cli.py",
+        "src/auggie/commands/query.py"
+      ]
+    },
+    {
+      "query": "What does resolve_search_path do to keep paths inside the repository?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_rg_runner.py",
+        "src/auggie_mcp/rg_runner.py",
+        "tests/test_server.py",
+        "src/auggie_mcp/output_processing.py",
+        "tests/test_output_processing.py",
+        "tests/test_semantic_search.py",
+        "tests/test_cli.py",
+        "src/auggie_mcp/server.py",
+        "src/auggie_mcp/agent_runner.py",
+        "tests/semantic/test_gitignore_indexing.py"
+      ]
+    },
+    {
+      "query": "How does run_semantic execute semantic queries and format results?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/commands/context.py",
+        "tests/test_semantic_search.py",
+        "src/auggie/search.py",
+        "src/auggie_mcp/semantic_search.py",
+        "tests/semantic/test_phase7_integration.py",
+        "src/auggie/commands/query.py",
+        "src/auggie_mcp/cli.py",
+        "tests/test_agent_runner.py",
+        "tests/semantic/test_phase6_context.py",
+        "src/auggie_mcp/server.py"
+      ]
+    },
+    {
+      "query": "Where is _candidate_added computed for repository index status?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_index_tools.py",
+        "src/auggie_mcp/server.py",
+        "tests/test_semantic_search.py",
+        "src/auggie_mcp/index_tools.py",
+        "tests/semantic/test_phase7_units.py",
+        "tests/test_server.py",
+        "tests/semantic/test_phase7_integration.py",
+        "tests/test_protocol.py",
+        "src/auggie/commands/query.py",
+        "src/auggie_mcp/output_processing.py"
+      ]
+    },
+    {
+      "query": "How does default_index_command locate the indexer executable?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/cli.py",
+        "tests/fake_auggie.py",
+        "tests/semantic/test_index_lock.py",
+        "src/auggie/commands/index.py",
+        "tests/test_index_tools.py",
+        "src/auggie/commands/__init__.py",
+        "src/auggie_mcp/index_tools.py",
+        "tests/test_semantic_search.py",
+        "tests/test_server.py",
+        "src/auggie/commands/_arg_builders.py"
+      ]
+    },
+    {
+      "query": "How does build_prompt construct the retrieval agent prompt?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_agent_runner.py",
+        "src/auggie_mcp/server.py",
+        "src/auggie_mcp/agent_runner.py",
+        "tests/test_server.py",
+        "tests/test_cli.py",
+        "src/auggie/commands/_arg_builders.py",
+        "tests/test_output_processing.py",
+        "src/auggie_mcp/cli.py",
+        "src/auggie/cli.py",
+        "src/auggie/search.py"
+      ]
+    },
+    {
+      "query": "Where is prune_old_files implemented for telemetry log cleanup?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_telemetry.py",
+        "src/auggie_mcp/telemetry.py",
+        "tests/test_server.py",
+        "tests/test_cli.py",
+        "src/auggie/commands/clean.py",
+        "src/auggie/indexer.py",
+        "tests/semantic/test_phase4_maintenance.py",
+        "src/auggie/commands/delete.py",
+        "src/auggie_mcp/cli.py",
+        "tests/test_output_processing.py"
+      ]
+    },
+    {
+      "query": "How does CallRecord track tool call duration and outcome?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie_mcp/telemetry.py",
+        "tests/test_server.py",
+        "tests/test_telemetry.py",
+        "src/auggie_mcp/server.py",
+        "tests/test_protocol.py",
+        "tests/test_cli.py",
+        "tests/test_semantic_search.py",
+        "tests/test_output_processing.py",
+        "tests/test_index_tools.py",
+        "src/auggie_mcp/output_processing.py"
+      ]
+    },
+    {
+      "query": "Where is SchemaOutdatedError raised when opening the SQLite database?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/db.py",
+        "tests/test_semantic_search.py",
+        "src/auggie_mcp/semantic_search.py",
+        "tests/test_index_tools.py",
+        "src/auggie/commands/health.py",
+        "src/auggie/cache.py",
+        "src/auggie_mcp/index_tools.py",
+        "tests/semantic/test_phase7_migration.py",
+        "tests/semantic/test_phase4_health.py",
+        "src/auggie/commands/query.py"
+      ]
+    },
+    {
+      "query": "How does rebuild_fts5 populate the full-text search index?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/db.py",
+        "src/auggie/commands/health.py",
+        "src/auggie/cli.py",
+        "src/auggie/commands/reindex.py",
+        "tests/test_semantic_search.py",
+        "tests/semantic/test_phase4_search.py",
+        "src/auggie/commands/query.py",
+        "tests/semantic/test_phase7_integration.py",
+        "src/auggie/indexer.py",
+        "tests/test_index_tools.py"
+      ]
+    },
+    {
+      "query": "How does _create_voyage_batches group texts under token limits?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/embed.py",
+        "tests/semantic/test_embed_parallel.py",
+        "src/auggie/indexer.py",
+        "src/auggie/rerank.py",
+        "tests/test_output_processing.py",
+        "tests/test_agent_runner.py",
+        "tests/semantic/test_indexer_grouping.py",
+        "src/auggie/chunking.py",
+        "src/auggie/models.py",
+        "src/auggie_mcp/output_processing.py"
+      ]
+    },
+    {
+      "query": "Where is detect_file_types_batch used to filter binary files?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/filetype.py",
+        "src/auggie/indexer.py",
+        "src/auggie/commands/index.py",
+        "src/auggie/__init__.py",
+        "tests/test_output_processing.py",
+        "src/auggie_mcp/index_tools.py",
+        "tests/semantic/test_phase3_indexer_regression.py",
+        "tests/semantic/test_gitignore_indexing.py",
+        "src/auggie_mcp/output_processing.py",
+        "src/auggie/commands/_common.py"
+      ]
+    },
+    {
+      "query": "How does compute_hybrid_confidence score search results?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/rerank.py",
+        "src/auggie/search.py",
+        "tests/test_output_processing.py",
+        "src/auggie/commands/query.py",
+        "tests/test_semantic_search.py",
+        "src/auggie/commands/tune.py",
+        "src/auggie/cli.py",
+        "src/auggie_mcp/semantic_search.py",
+        "src/auggie_mcp/output_processing.py",
+        "src/auggie/commands/context.py"
+      ]
+    },
+    {
+      "query": "Where is pattern_to_sql_glob defined for path filtering?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/search.py",
+        "src/auggie/commands/delete.py",
+        "tests/test_semantic_search.py",
+        "src/auggie/cli.py",
+        "tests/test_rg_runner.py",
+        "src/auggie/commands/query.py",
+        "src/auggie/indexer.py",
+        "src/auggie/watcher.py",
+        "tests/semantic/test_gitignore_indexing.py",
+        "tests/test_output_processing.py"
+      ]
+    },
+    {
+      "query": "How does IndexLock prevent concurrent indexing writes?",
+      "recall": 1.0,
+      "top10": [
+        "tests/semantic/test_phase8_watch_lock.py",
+        "src/auggie/index_lock.py",
+        "tests/semantic/test_index_lock.py",
+        "src/auggie/watcher.py",
+        "tests/semantic/test_phase5_watcher.py",
+        "tests/fake_auggie.py",
+        "tests/test_index_tools.py",
+        "src/auggie/commands/watch.py",
+        "tests/semantic/test_phase7_integration.py",
+        "tests/test_semantic_search.py"
+      ]
+    },
+    {
+      "query": "How does LanceStore store and search vector embeddings?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/lance_store.py",
+        "tests/semantic/test_phase7_units.py",
+        "tests/semantic/test_indexer_grouping.py",
+        "tests/test_semantic_search.py",
+        "tests/semantic/test_phase7_integration.py",
+        "src/auggie/search.py",
+        "tests/semantic/test_phase4_search.py",
+        "tests/semantic/test_phase3_indexer_regression.py",
+        "src/auggie/indexer.py",
+        "tests/semantic/test_phase7_migration.py"
+      ]
+    },
+    {
+      "query": "How are MCP server tools registered and wired to lifespan state?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie_mcp/server.py",
+        "tests/test_server.py",
+        "tests/test_index_tools.py",
+        "src/auggie_mcp/__init__.py",
+        "src/auggie_mcp/__main__.py",
+        "tests/test_protocol.py",
+        "src/auggie_mcp/telemetry.py",
+        "tests/semantic/test_phase5_watch_command.py",
+        "plugin/pi/extensions/auggie.ts",
+        "tests/__init__.py"
+      ]
+    },
+    {
+      "query": "How are configuration values loaded from TOML and applied to environment variables?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_settings.py",
+        "src/auggie_mcp/settings.py",
+        "tests/test_agent_runner.py",
+        "tests/test_output_processing.py",
+        "tests/test_launch.py",
+        "src/auggie_mcp/agent_runner.py",
+        "src/auggie_mcp/launch.py",
+        "src/auggie_mcp/output_processing.py",
+        "tests/test_server.py",
+        "src/auggie/search.py"
+      ]
+    },
+    {
+      "query": "How are ripgrep subprocesses terminated gracefully on timeout or cancellation?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie_mcp/rg_runner.py",
+        "tests/test_rg_runner.py",
+        "src/auggie_mcp/index_tools.py",
+        "tests/test_server.py",
+        "tests/test_index_tools.py",
+        "tests/test_output_processing.py",
+        "src/auggie_mcp/cli.py",
+        "tests/test_cli.py",
+        "src/auggie_mcp/server.py",
+        "tests/fake_rg.py"
+      ]
+    },
+    {
+      "query": "How does the server detect modified and deleted files compared to the stored index?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_index_tools.py",
+        "src/auggie_mcp/index_tools.py",
+        "src/auggie/commands/query.py",
+        "tests/semantic/test_phase7_integration.py",
+        "tests/test_semantic_search.py",
+        "tests/semantic/test_phase5_watcher.py",
+        "src/auggie/indexer.py",
+        "tests/semantic/test_phase7_units.py",
+        "src/auggie/commands/watch.py",
+        "src/auggie/watcher.py"
+      ]
+    },
+    {
+      "query": "How does semantic search validate top_k and context_lines bounds?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_semantic_search.py",
+        "src/auggie_mcp/semantic_search.py",
+        "tests/semantic/test_phase6_context.py",
+        "src/auggie_mcp/server.py",
+        "tests/test_agent_runner.py",
+        "src/auggie/commands/context.py",
+        "src/auggie/search.py",
+        "tests/semantic/test_phase4_search.py",
+        "tests/test_output_processing.py",
+        "tests/semantic/test_phase7_integration.py"
+      ]
+    },
+    {
+      "query": "How does the retrieval agent avoid nested MCP calls via environment variables?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_agent_runner.py",
+        "tests/test_cli.py",
+        "tests/test_output_processing.py",
+        "tests/test_server.py",
+        "src/auggie_mcp/server.py",
+        "src/auggie_mcp/agent_runner.py",
+        "src/auggie_mcp/cli.py",
+        "src/auggie_mcp/output_processing.py",
+        "src/auggie_mcp/__init__.py",
+        "tests/test_protocol.py"
+      ]
+    },
+    {
+      "query": "How are long tool outputs compressed or pruned with an LLM client?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_output_processing.py",
+        "src/auggie_mcp/server.py",
+        "src/auggie_mcp/output_processing.py",
+        "tests/test_server.py",
+        "tests/test_agent_runner.py",
+        "tests/test_protocol.py",
+        "src/auggie/commands/query.py",
+        "src/auggie_mcp/telemetry.py",
+        "src/auggie/commands/context.py",
+        "src/auggie/chunking.py"
+      ]
+    },
+    {
+      "query": "How are telemetry events written to daily JSONL files?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_telemetry.py",
+        "tests/test_cli.py",
+        "src/auggie_mcp/telemetry.py",
+        "src/auggie_mcp/cli.py",
+        "tests/test_protocol.py",
+        "tests/test_server.py",
+        "tests/test_output_processing.py",
+        "src/auggie/commands/log.py",
+        "src/auggie_mcp/output_processing.py",
+        "src/auggie/cli.py"
+      ]
+    },
+    {
+      "query": "How does the CLI parse and dispatch retrieve and search subcommands?",
+      "recall": 1.0,
+      "top10": [
+        "tests/test_cli.py",
+        "src/auggie_mcp/cli.py",
+        "src/auggie/cli.py",
+        "src/auggie/commands/__init__.py",
+        "tests/test_server.py",
+        "src/auggie/commands/_arg_builders.py",
+        "tests/test_semantic_search.py",
+        "src/auggie_mcp/server.py",
+        "tests/semantic/test_phase6_context.py",
+        "src/auggie/commands/query.py"
+      ]
+    },
+    {
+      "query": "How are source files split into syntax-aware chunks using tree-sitter?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/ast_chunking.py",
+        "src/auggie/chunking.py",
+        "src/auggie/indexer.py",
+        "src/auggie_mcp/output_processing.py",
+        "src/auggie/commands/_arg_builders.py",
+        "src/auggie/commands/chunk.py",
+        "tests/test_output_processing.py",
+        "src/auggie/__init__.py",
+        "src/auggie/commands/tune.py",
+        "src/auggie/commands/_common.py"
+      ]
+    },
+    {
+      "query": "How are plain text files split into overlapping line-based chunks?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/chunking.py",
+        "tests/test_output_processing.py",
+        "src/auggie/ast_chunking.py",
+        "src/auggie_mcp/output_processing.py",
+        "src/auggie/search.py",
+        "tests/test_agent_runner.py",
+        "src/auggie/indexer.py",
+        "src/auggie/commands/chunk.py",
+        "src/auggie/commands/tune.py",
+        "src/auggie/filetype.py"
+      ]
+    },
+    {
+      "query": "How are query embeddings cached across L1, L2, and L3 tiers?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/cache.py",
+        "src/auggie/search.py",
+        "src/auggie/lance_store.py",
+        "tests/semantic/test_phase4_search.py",
+        "tests/test_semantic_search.py",
+        "tests/semantic/test_phase7_integration.py",
+        "src/auggie/indexer.py",
+        "src/auggie/commands/query.py",
+        "src/auggie/rerank.py",
+        "tests/semantic/test_phase7_units.py"
+      ]
+    },
+    {
+      "query": "How does the indexer respect gitignore and auggieignore exclusion rules?",
+      "recall": 1.0,
+      "top10": [
+        "tests/semantic/test_gitignore_indexing.py",
+        "tests/test_index_tools.py",
+        "src/auggie/indexer.py",
+        "src/auggie_mcp/index_tools.py",
+        "src/auggie/commands/delete.py",
+        "tests/semantic/test_phase5_watcher.py",
+        "src/auggie/watcher.py",
+        "src/auggie/commands/watch.py",
+        "src/auggie/commands/_arg_builders.py",
+        "src/auggie/commands/_common.py"
+      ]
+    },
+    {
+      "query": "How are Voyage embedding API requests retried on transient failures?",
+      "recall": 1.0,
+      "top10": [
+        "tests/semantic/test_embed_retry.py",
+        "src/auggie/embed.py",
+        "tests/semantic/test_embed_parallel.py",
+        "tests/test_output_processing.py",
+        "src/auggie/rerank.py",
+        "tests/test_agent_runner.py",
+        "src/auggie/models.py",
+        "tests/test_server.py",
+        "src/auggie_mcp/output_processing.py",
+        "src/auggie/commands/query.py"
+      ]
+    },
+    {
+      "query": "How are embedding model dimensions and optimal chunk sizes resolved?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/models.py",
+        "src/auggie/indexer.py",
+        "src/auggie/embed.py",
+        "src/auggie/search.py",
+        "src/auggie/__init__.py",
+        "src/auggie/commands/tune.py",
+        "src/auggie/lance_store.py",
+        "src/auggie/commands/query.py",
+        "tests/test_semantic_search.py",
+        "tests/semantic/test_phase7_integration.py"
+      ]
+    },
+    {
+      "query": "How are vector and keyword search rankings fused with reciprocal rank fusion?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/search.py",
+        "src/auggie/rerank.py",
+        "src/auggie/commands/query.py",
+        "src/auggie/cli.py",
+        "tests/semantic/test_phase4_search.py",
+        "tests/test_semantic_search.py",
+        "tests/semantic/test_phase7_integration.py",
+        "src/auggie/commands/tune.py",
+        "src/auggie/cache.py",
+        "src/auggie_mcp/semantic_search.py"
+      ]
+    },
+    {
+      "query": "How are search results reranked with Voyage rerank models?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/rerank.py",
+        "src/auggie/commands/query.py",
+        "src/auggie/cli.py",
+        "src/auggie/cache.py",
+        "src/auggie/search.py",
+        "src/auggie_mcp/server.py",
+        "src/auggie/embed.py",
+        "tests/test_output_processing.py",
+        "tests/test_server.py",
+        "src/auggie/commands/tune.py"
+      ]
+    },
+    {
+      "query": "How does the file watcher debounce filesystem events for incremental reindexing?",
+      "recall": 1.0,
+      "top10": [
+        "src/auggie/watcher.py",
+        "tests/semantic/test_phase7_integration.py",
+        "tests/semantic/test_phase5_watcher.py",
+        "src/auggie/commands/watch.py",
+        "tests/test_index_tools.py",
+        "tests/semantic/test_index_lock.py",
+        "src/auggie/indexer.py",
+        "tests/semantic/test_phase5_watch_command.py",
+        "src/auggie/commands/_arg_builders.py",
+        "src/auggie_mcp/index_tools.py"
+      ]
+    }
+  ]
+}

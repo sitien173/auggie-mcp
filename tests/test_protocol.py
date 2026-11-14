@@ -1,304 +1,260 @@
-"""Wire-level tests: the server driven by an in-process 2026-07-28 client."""
+"""Wire-level protocol tests for both MCP handshakes and tool errors."""
 
 import asyncio
 import json
-import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mcp import Client, MCPError
-from mcp.types import UNSUPPORTED_PROTOCOL_VERSION, Implementation
-from mcp.types.version import LATEST_HANDSHAKE_VERSION, MODERN_PROTOCOL_VERSIONS
+from mcp import Client
+from mcp.types import Implementation
 
-from mcp.server.context import ServerRequestContext
-
-from auggie_mcp import index_tools
-from auggie_mcp.server import _refuse_initialize
-from tests.test_server import (  # noqa: F401
-    FakeClientWithCounters,
-    make_server,
-    setUpModule,
-    tearDownModule,
+from auggie_mcp import (
+    config,
+    embed,
+    locking,
+    output_limits,
+    retrieval,
+    semantic,
+    server,
 )
+from tests.test_server import FAKE_RG
 
 PROTOCOL = "2026-07-28"
-FAKE_INDEX_COMMAND = [sys.executable, str(Path(__file__).parent / "fake_auggie.py")]
 
 
-def connect(srv):
-    return Client(
-        srv,
-        mode=PROTOCOL,
-        client_info=Implementation(name="test", version="1"),
+def make_server(repo, telemetry_dir=None):
+    telemetry_config = config.TelemetryConfig(dir=telemetry_dir) if telemetry_dir else config.TelemetryConfig()
+    return server.create_server(
+        app_config=config.Config(agent=config.AgentConfig(driver="pi"), telemetry=telemetry_config),
+        repository_root=repo,
+        rg_executable=str(FAKE_RG),
     )
 
 
-def fake_server(repository_root):
-    return make_server(repository_root, client_factory=FakeClientWithCounters)
-
-
-def leaf_exceptions(exc):
-    if isinstance(exc, BaseExceptionGroup):
-        return [leaf for sub in exc.exceptions for leaf in leaf_exceptions(sub)]
-    return [exc]
+def connect(srv, mode=PROTOCOL):
+    return Client(srv, mode=mode, client_info=Implementation(name="test", version="1"))
 
 
 class ProtocolTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.repo = Path(self.tmp.name) / "repo"
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name) / "repo"
         self.repo.mkdir()
         (self.repo / "hello.txt").write_text("hello world\n")
 
-    def run_client(self, make_srv, fn):
-        async def main():
-            async with connect(make_srv()) as client:
+    def run_client(self, fn, *, mode=PROTOCOL):
+        async def run():
+            async with connect(make_server(self.repo), mode=mode) as client:
+                return await fn(client)
+        return asyncio.run(run())
+
+    def test_discover_handshake_and_five_tool_output_schemas(self):
+        async def fn(client):
+            discovered = await client.session.send_discover(PROTOCOL)
+            listed = await client.list_tools()
+            return discovered, listed
+        discovered, listed = self.run_client(fn)
+        self.assertIn(PROTOCOL, discovered["supportedVersions"])
+        self.assertEqual([tool.name for tool in listed.tools], [
+            "grep_search", "semantic_search", "index_status", "index_update", "codebase_retrieval"
+        ])
+        self.assertTrue(all(tool.output_schema is not None for tool in listed.tools))
+
+    def test_initialize_handshake_and_structured_text_parity(self):
+        async def fn(client):
+            listed = await client.list_tools()
+            result = await client.call_tool("grep_search", {
+                "repository_path": str(self.repo), "pattern": "hello", "flags": ["-F"]
+            })
+            return listed, result
+        listed, result = self.run_client(fn, mode="legacy")
+        self.assertEqual([tool.name for tool in listed.tools], [
+            "grep_search", "semantic_search", "index_status", "index_update", "codebase_retrieval"
+        ])
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.structured_content, __import__("json").loads(result.content[0].text))
+        self.assertEqual(set(result.structured_content), {"matches", "truncated", "archive_path"})
+
+    def test_missing_grep_repository_is_invalid_path(self):
+        async def fn(client):
+            return await client.call_tool("grep_search", {
+                "repository_path": str(self.repo / "missing"), "pattern": "x"
+            })
+        result = self.run_client(fn)
+        self.assertTrue(result.is_error)
+        self.assertIn("INVALID_PATH", result.content[0].text)
+
+    def test_server_lifespan_cleans_archives_once_for_repository_root(self):
+        srv = server.create_server(
+            app_config=config.Config(), repository_root=self.repo, rg_executable=str(FAKE_RG)
+        )
+
+        async def run():
+            async with connect(srv) as client:
+                await client.list_tools()
+
+        with patch.object(output_limits, "cleanup_archives_on_startup") as cleanup:
+            asyncio.run(run())
+        cleanup.assert_called_once_with(self.repo)
+
+    def test_each_design_error_code_reaches_the_mcp_client(self):
+        cases = [
+            ("INVALID_PATH", "grep_search", {"repository_path": str(self.repo), "pattern": "x", "path": "missing"}, None, None, None),
+            ("INVALID_ARGUMENT", "semantic_search", {"repository_path": str(self.repo), "query": "x", "top_k": 0}, None, None, None),
+            ("INDEX_MISSING", "semantic_search", {"repository_path": str(self.repo), "query": "x"}, semantic, "semantic_search", semantic.IndexMissingError("missing")),
+            ("INDEX_MODEL_MISMATCH", "semantic_search", {"repository_path": str(self.repo), "query": "x"}, semantic, "semantic_search", semantic.ModelMismatchError("mismatch")),
+            ("INDEX_BUSY", "index_update", {"repository_path": str(self.repo)}, server, "_run_index_update", locking.IndexBusyError("busy")),
+            ("MISSING_API_KEY", "index_update", {"repository_path": str(self.repo)}, server, "_run_index_update", embed.MissingApiKeyError("key")),
+            ("EMBED_FAILED", "index_update", {"repository_path": str(self.repo)}, server, "_run_index_update", embed.EmbedError("HTTP 503")),
+            ("TIMEOUT", "grep_search", {"repository_path": str(self.repo), "pattern": "x"}, server.grep, "grep_search", TimeoutError("timeout")),
+            ("RETRIEVAL_BUSY", "codebase_retrieval", {"repository_path": str(self.repo), "query": "x"}, retrieval, "run_agent", retrieval.RetrievalBusyError("busy")),
+            ("REPO_MODIFIED", "codebase_retrieval", {"repository_path": str(self.repo), "query": "x"}, retrieval, "run_agent", retrieval.RepoModifiedError("changed")),
+            ("BINARY_NOT_FOUND", "grep_search", {"repository_path": str(self.repo), "pattern": "x"}, server.grep, "grep_search", FileNotFoundError("rg executable not found")),
+        ]
+        for code, name, arguments, module, function, error in cases:
+            with self.subTest(code=code):
+                async def fn(client, error=error, name=name, arguments=arguments,
+                             module=module, function=function, code=code):
+                    if error is None:
+                        result = await client.call_tool(name, arguments)
+                    else:
+                        with patch.object(module, function, side_effect=error):
+                            result = await client.call_tool(name, arguments)
+                    self.assertTrue(result.is_error)
+                    self.assertIn(code, result.content[0].text)
+                self.run_client(fn)
+
+    def test_decorator_records_success_error_and_cancellation_with_context(self):
+        telemetry_dir = self.repo / "telemetry"
+        started = asyncio.Event()
+
+        original = server.grep.grep_search
+
+        async def controlled(repository_path, pattern, **kwargs):
+            if pattern == "wait":
+                started.set()
+                await asyncio.Event().wait()
+            return await original(repository_path, pattern, **kwargs)
+
+        async def run_calls():
+            async with connect(make_server(self.repo, telemetry_dir)) as client:
+                await client.call_tool("grep_search", {
+                    "repository_path": str(self.repo), "pattern": "hello"
+                })
+                await client.call_tool("grep_search", {
+                    "repository_path": str(self.repo / "missing"), "pattern": "x"
+                })
+                pending = asyncio.create_task(client.call_tool("grep_search", {
+                    "repository_path": str(self.repo), "pattern": "wait"
+                }))
+                await started.wait()
+                pending.cancel()
+                try:
+                    await pending
+                except asyncio.CancelledError:
+                    pass
+
+        with patch.object(server.grep, "grep_search", side_effect=controlled):
+            asyncio.run(run_calls())
+        events = [json.loads(line) for path in telemetry_dir.glob("events-*.jsonl")
+                  for line in path.read_text().splitlines()]
+        self.assertEqual(len(events), 3)
+        self.assertEqual({event["outcome"] for event in events}, {"ok", "error", "cancelled"})
+        for event in events:
+            self.assertEqual(event["tool"], "grep_search")
+            self.assertEqual(event["source"], "mcp")
+            self.assertEqual(event["client"], {"name": "test", "version": "1"})
+            self.assertIn("repository_path", event["input"])
+            self.assertIsNotNone(event["runner"])
+        success = next(event for event in events if event["outcome"] == "ok")
+        self.assertIsNotNone(success["runner"])
+
+    def test_retrieval_event_records_runner_bytes(self):
+        telemetry_dir = self.repo / "retrieval-telemetry"
+
+        async def fake_agent(*args, **kwargs):
+            return {
+                "answer": "retrieval answer", "driver": "pi", "duration_ms": 5,
+                "repo_modified": False, "git_check": "skipped",
+            }
+
+        async def fn(client):
+            return await client.call_tool("codebase_retrieval", {
+                "repository_path": str(self.repo), "query": "q"
+            })
+
+        async def run():
+            async with connect(make_server(self.repo, telemetry_dir)) as client:
                 return await fn(client)
 
-        return asyncio.run(main())
-
-    def test_negotiates_2026_07_28_and_discover_reports_identity(self):
-        async def fn(client):
-            raw = await client.session.send_discover(PROTOCOL)
-            return client.protocol_version, raw
-
-        version, raw = self.run_client(lambda: fake_server(self.repo), fn)
-        self.assertEqual(version, PROTOCOL)
-        self.assertIn(PROTOCOL, raw["supportedVersions"])
-        info = raw["_meta"]["io.modelcontextprotocol/serverInfo"]
-        self.assertEqual(info["name"], "auggie-mcp")
-        self.assertEqual(info["version"], "0.5.0")
-
-    def test_tools_list_order_schemas_and_annotations(self):
-        srv = fake_server(self.repo)
-        expected = asyncio.run(srv.list_tools())
-
-        async def fn(client):
-            return await client.list_tools()
-
-        result = self.run_client(lambda: srv, fn)
-        self.assertEqual(
-            [t.name for t in result.tools],
-            ["codebase_retrieval", "codebase_search", "index_status", "index_update"],
-        )
-        for wire, local in zip(result.tools, expected):
-            self.assertEqual(wire.input_schema, local.input_schema)
-            self.assertEqual(wire.annotations, local.annotations)
-
-    def test_search_exact_returns_complete_envelope(self):
-        async def fn(client):
-            return await client.call_tool(
-                "codebase_search", {"query": "hello", "path": ".", "flags": ["-F"]}
-            )
-
-        result = self.run_client(lambda: fake_server(self.repo), fn)
+        with patch.object(retrieval, "run_agent", side_effect=fake_agent):
+            result = asyncio.run(run())
         self.assertFalse(result.is_error)
-        self.assertEqual(result.result_type, "complete")
-        sc = result.structured_content
-        self.assertEqual(sc["tool"], "codebase_search")
-        self.assertEqual(sc["data"]["exit_code"], 0)
-        self.assertIn("hello", sc["data"]["stdout"])
-        self.assertIn("processing", sc)
+        event = json.loads(next(telemetry_dir.glob("events-*.jsonl")).read_text())
+        self.assertEqual(event["runner"], {
+            "exit_code": 0, "stdout_bytes": len("retrieval answer"), "stderr_bytes": 0
+        })
 
-    def test_failing_search_returns_tool_error_text(self):
-        async def fn(client):
-            return await client.call_tool(
-                "codebase_search", {"query": "x", "flags": ["--exclude"]}
-            )
-
-        result = self.run_client(lambda: fake_server(self.repo), fn)
-        self.assertTrue(result.is_error)
-        self.assertIn("--exclude", result.content[0].text)
-
-    def test_index_update_delivers_progress(self):
-        events = []
-
-        async def on_progress(progress, total, message):
-            events.append((progress, total, message))
-
-        async def fn(client):
-            return await client.call_tool(
-                "index_update",
-                {"repository_path": str(self.repo)},
-                progress_callback=on_progress,
-            )
-
-        with (
-            patch.dict(os.environ, {"VOYAGE_API_KEY": "test-key"}),
-            patch.object(index_tools, "default_index_command", return_value=FAKE_INDEX_COMMAND),
-        ):
-            result = self.run_client(lambda: fake_server(self.repo), fn)
-        self.assertFalse(result.is_error)
-        self.assertGreaterEqual(len(events), 1)
-
-    def test_index_status_unexpected_exception_message_reaches_client(self):
-        async def fn(client):
-            return await client.call_tool(
-                "index_status", {"repository_path": str(self.repo)}
-            )
-
-        with patch.object(index_tools, "index_status", side_effect=RuntimeError("boom")):
-            result = self.run_client(lambda: fake_server(self.repo), fn)
-        self.assertTrue(result.is_error)
-        self.assertIn("boom", result.content[0].text)
-
-    def test_index_update_unexpected_exception_message_reaches_client(self):
-        async def fn(client):
-            return await client.call_tool(
-                "index_update", {"repository_path": str(self.repo)}
-            )
-
-        with patch.object(
-            index_tools, "run_index_update", side_effect=RuntimeError("boom")
-        ):
-            result = self.run_client(lambda: fake_server(self.repo), fn)
-        self.assertTrue(result.is_error)
-        self.assertIn("boom", result.content[0].text)
-
-    def telemetry_events(self, handler):
-        tdir = Path(self.tmp.name) / "telemetry"
-        env = patch.dict(os.environ, {"AUGGIE_TELEMETRY_DIR": str(tdir)})
-        env.start()
-        self.addCleanup(env.stop)
-        os.environ.pop("AUGGIE_TELEMETRY", None)
-        handler()
-        return [
-            json.loads(line)
-            for path in sorted(tdir.glob("events-*.jsonl"))
-            for line in path.read_text().splitlines()
-        ]
-
-    def test_index_status_telemetry_records_original_exception_type(self):
-        async def fn(client):
-            return await client.call_tool(
-                "index_status", {"repository_path": str(self.repo)}
-            )
-
-        def run():
-            with patch.object(
-                index_tools, "index_status", side_effect=RuntimeError("boom")
-            ):
-                self.run_client(lambda: fake_server(self.repo), fn)
-
-        (event,) = self.telemetry_events(run)
-        self.assertEqual(event["outcome"], "error")
-        self.assertEqual(event["error"]["type"], "RuntimeError")
-
-    def test_index_update_telemetry_records_original_exception_type(self):
-        async def fn(client):
-            return await client.call_tool(
-                "index_update", {"repository_path": str(self.repo)}
-            )
-
-        def run():
-            with patch.object(
-                index_tools, "run_index_update", side_effect=RuntimeError("boom")
-            ):
-                self.run_client(lambda: fake_server(self.repo), fn)
-
-        (event,) = self.telemetry_events(run)
-        self.assertEqual(event["outcome"], "error")
-        self.assertEqual(event["error"]["type"], "RuntimeError")
-
-    def test_retrieval_processing_exception_message_reaches_client(self):
-        class FailingProcessor:
-            async def process_retrieval(self, **kwargs):
-                raise RuntimeError("boom")
-
-        async def fn(client):
-            return await client.call_tool(
-                "codebase_retrieval",
-                {"repository_path": str(self.repo), "query": "what is here?"},
-            )
-
-        result = self.run_client(
-            lambda: make_server(
-                self.repo,
-                client_factory=FakeClientWithCounters,
-                processor_factory=lambda _: FailingProcessor(),
-            ),
-            fn,
+    def test_grep_telemetry_records_real_subprocess_runner_values(self):
+        telemetry_dir = self.repo / "rg-telemetry"
+        executable = self.repo / "controlled-rg"
+        event = {
+            "type": "match",
+            "data": {
+                "path": {"text": "hello.txt"},
+                "lines": {"text": "hello world\n"},
+                "line_number": 1,
+            },
+        }
+        stdout = (json.dumps(event, separators=(",", ":")) + "\n").encode()
+        stderr = b"rg diagnostic\n"
+        executable.write_text(
+            "#!/usr/bin/env python3\nimport sys\n"
+            f"if sys.argv[-2] != 'empty-success': sys.stdout.write({stdout.decode()!r})\n"
+            f"sys.stderr.write({stderr.decode()!r})\n"
+            "if sys.argv[-2] == 'bad-exit': sys.exit(2)\n"
         )
-        self.assertTrue(result.is_error)
-        self.assertIn("boom", result.content[0].text)
-
-    def test_initialize_is_refused_with_supported_versions(self):
-        async def main():
-            async with Client(
-                fake_server(self.repo),
-                mode="legacy",
-                client_info=Implementation(name="test", version="1"),
-            ):
-                pass
-
-        with self.assertRaises(BaseExceptionGroup) as caught:
-            asyncio.run(main())
-        (error,) = leaf_exceptions(caught.exception)
-        self.assertIsInstance(error, MCPError)
-        self.assertEqual(error.code, UNSUPPORTED_PROTOCOL_VERSION)
-        self.assertIn(PROTOCOL, error.message)
-        self.assertEqual(error.data["supported"], list(MODERN_PROTOCOL_VERSIONS))
-        self.assertEqual(error.data["supported"], ["2026-07-28"])
-        self.assertEqual(error.data["requested"], LATEST_HANDSHAKE_VERSION)
-
-    def test_tools_list_carries_one_hour_private_cache_hint(self):
-        async def fn(client):
-            return await client.list_tools()
-
-        result = self.run_client(lambda: fake_server(self.repo), fn)
-        self.assertEqual(result.ttl_ms, 3_600_000)
-        self.assertEqual(result.cache_scope, "private")
-
-    def test_discover_advertises_no_list_changed_or_subscribe(self):
-        async def fn(client):
-            return await client.session.send_discover(PROTOCOL)
-
-        raw = self.run_client(lambda: fake_server(self.repo), fn)
-        caps = raw["capabilities"]
-        self.assertFalse(caps.get("tools", {}).get("listChanged", False))
-        self.assertFalse(caps.get("resources", {}).get("subscribe", False))
-        self.assertNotIn("subscriptions", caps)
-
-    def test_initialize_notification_passes_through(self):
-        ctx = ServerRequestContext(
-            session=None,
-            lifespan_context={},
-            protocol_version=PROTOCOL,
-            method="initialize",
-            params={"protocolVersion": "2025-11-25"},
-            request_id=None,
-        )
-        seen = []
-
-        async def call_next(c):
-            seen.append(c)
-            return {"ok": True}
-
-        result = asyncio.run(_refuse_initialize(ctx, call_next))
-        self.assertEqual(result, {"ok": True})
-        self.assertEqual(seen, [ctx])
-
-    def test_initialize_empty_protocol_version_reports_none(self):
-        ctx = ServerRequestContext(
-            session=None,
-            lifespan_context={},
-            protocol_version=PROTOCOL,
-            method="initialize",
-            params={"protocolVersion": ""},
-            request_id=1,
+        executable.chmod(0o755)
+        srv = server.create_server(
+            app_config=config.Config(telemetry=config.TelemetryConfig(dir=telemetry_dir)),
+            repository_root=self.repo,
+            rg_executable=str(executable),
         )
 
-        async def call_next(c):
-            raise AssertionError("call_next must not run")
+        async def call():
+            async with connect(srv) as client:
+                await client.call_tool("grep_search", {
+                    "repository_path": str(self.repo), "pattern": "hello"
+                })
+                await client.call_tool("grep_search", {
+                    "repository_path": str(self.repo), "pattern": "empty-success"
+                })
+                return await client.call_tool("grep_search", {
+                    "repository_path": str(self.repo), "pattern": "bad-exit"
+                })
 
-        with self.assertRaises(MCPError) as caught:
-            asyncio.run(_refuse_initialize(ctx, call_next))
-        self.assertEqual(caught.exception.code, UNSUPPORTED_PROTOCOL_VERSION)
-        self.assertIsNone(caught.exception.data["requested"])
+        result = asyncio.run(call())
+        self.assertTrue(result.is_error)
+        records = [json.loads(line) for path in telemetry_dir.glob("events-*.jsonl")
+                   for line in path.read_text().splitlines()]
+        self.assertEqual(len(records), 3)
+        self.assertEqual(records[0]["runner"], {
+            "exit_code": 0,
+            "stdout_bytes": len(stdout),
+            "stderr_bytes": len(stderr),
+        })
+        self.assertEqual(records[1]["runner"], {
+            "exit_code": 0, "stdout_bytes": 0, "stderr_bytes": len(stderr)
+        })
+        self.assertEqual(records[2]["outcome"], "error")
+        self.assertEqual(records[2]["runner"], {
+            "exit_code": 2,
+            "stdout_bytes": len(stdout),
+            "stderr_bytes": len(stderr),
+        })
 
 
 if __name__ == "__main__":

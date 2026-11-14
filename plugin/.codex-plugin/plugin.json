@@ -1,7 +1,7 @@
 {
   "name": "auggie-mcp",
   "version": "0.5.0",
-  "description": "Agent-based codebase retrieval and semantic search over MCP.",
+  "description": "MCP server for repository grep, semantic search, indexing, and read-only codebase retrieval.",
   "mcpServers": "./auggie.mcp.json",
   "author": {
     "name": "Tien Ngo"

@@ -2,26 +2,26 @@
 
 import sys
 
-from auggie_mcp import settings
+from auggie_mcp import config
 
 
-def _apply() -> None:
+def _load_config():
     try:
-        settings.apply()
-    except settings.ConfigError as exc:
+        return config.load()
+    except config.ConfigError as exc:
         print(f"auggie: {exc}", file=sys.stderr)
         sys.exit(2)
 
 
 def server() -> None:
-    _apply()
+    cfg = _load_config()
     from auggie_mcp.server import run
 
-    run()
+    run(cfg)
 
 
 def cli() -> int:
-    _apply()
+    cfg = _load_config()
     from auggie_mcp.cli import main
 
-    return main()
+    return main(config=cfg)
