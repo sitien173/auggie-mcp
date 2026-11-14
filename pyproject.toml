@@ -14,7 +14,7 @@ requires-python = ">=3.12"
 dependencies = [
     "mcp>=2.3,<3",
     "numpy==2.5.4",
-    "voyageai==0.4.1",
+    "voyageai==0.6.0",
     "coding-agent-cli==0.2.0",
 ]
 
